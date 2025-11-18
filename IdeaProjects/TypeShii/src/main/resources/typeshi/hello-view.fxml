@@ -1,0 +1,30 @@
+package typeshi;
+
+
+        import javafx.application.Application;
+        import javafx.scene.Scene;
+        import javafx.scene.image.Image;
+        import javafx.stage.Stage;
+
+
+        public class Main extends Application {
+        @Override
+        public void start(Stage primaryStage) throws Exception {
+        UIComponents ui = new UIComponents();
+        Scene scene = new Scene(ui.rootPane, 1000, 640);
+        scene.getStylesheets().add(getClass().getResource("/typeshi/styles.css").toExternalForm());
+        primaryStage.setTitle("TypeShi — Real-time Typing Duel");
+        primaryStage.setScene(scene);
+        primaryStage.getIcons().add(new Image(getClass().getResourceAsStream("/typeshi/icon.png")));
+        primaryStage.show();
+
+
+        typeshi.GameController controller = new typeshi.GameController(ui);
+        ui.setController(controller);
+        }
+
+
+        public static void main(String[] args) {
+        launch(args);
+        }
+        }

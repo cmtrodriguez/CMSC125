@@ -1,0 +1,61 @@
+/* Root background */
+.root {
+    -fx-background-color: linear-gradient(to bottom right, #1f1c2c, #928dab);
+}
+
+/* Title Labels */
+.title {
+    -fx-font-family: "Consolas";
+    -fx-font-size: 48px;
+    -fx-text-fill: limegreen;
+    -fx-effect: dropshadow(gaussian, black, 4, 0.5, 2, 2);
+}
+
+/* Buttons */
+.button {
+    -fx-background-radius: 20;
+    -fx-text-fill: white;
+    -fx-font-family: "Consolas";
+    -fx-font-size: 18px;
+    -fx-padding: 8 20 8 20;
+    -fx-background-color: linear-gradient(to right, #00b09b, #96c93d);
+}
+
+.button:hover {
+    -fx-background-color: linear-gradient(to right, #96c93d, #00b09b);
+}
+
+/* TextArea for Target Passage */
+.target {
+    -fx-background-color: #1b1b2f;
+    -fx-text-fill: white;
+    -fx-padding: 10;
+    -fx-background-radius: 10;
+}
+
+/* Input Field */
+.text-field {
+    -fx-background-radius: 10;
+    -fx-padding: 6;
+    -fx-font-family: "Consolas";
+    -fx-font-size: 16px;
+}
+
+/* Progress Bars */
+.progress-bar {
+    -fx-accent: limegreen;
+    -fx-background-radius: 10;
+}
+
+/* Computer log box */
+.vbox {
+    -fx-background-color: #1b1b2f;
+    -fx-background-radius: 10;
+    -fx-padding: 5;
+}
+
+/* Timer Label */
+.label {
+    -fx-font-family: "Consolas";
+    -fx-text-fill: white;
+}
