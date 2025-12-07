@@ -404,15 +404,26 @@ public class GameController {
     private void endGame() {
         running = false;
         if (backgroundPool != null) backgroundPool.shutdownNow();
+
+        // capture final stats
+        int playerScore = scoreManager.getPlayerScore();
+        int computerScore = scoreManager.getComputerScore();
+        int playerErrors = scoreManager.getPlayerErrors();
+        int computerErrors = scoreManager.getComputerErrors();
+
         Platform.runLater(() -> {
-            ui.logBox.getChildren().add(
-                    new Label("Time's up! Round finished.")
+            VictoryScreen victory = new VictoryScreen(
+                    playerScore,
+                    computerScore,
+                    playerErrors,
+                    computerErrors
             );
-            ui.logBox.getChildren().add(
-                    new Label("Player: " + playerFinishedCount + " passages | Computer: " + computerFinishedCount + " passages")
-            );
+
+            // swap the current game UI for the victory screen, keeping the same Scene
+            ui.rootPane.getScene().setRoot(victory.getRoot());
         });
     }
+
 
     private String getCurrentPassage() {
         return playerPassage;
