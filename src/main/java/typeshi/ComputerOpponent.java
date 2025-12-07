@@ -21,9 +21,15 @@ public class ComputerOpponent implements Runnable {
 
     @Override
     public void run() {
-        if (!running || position >= passage.length()) {
+        // If we have been stopped, do nothing
+        if (!running) {
+            return;
+        }
+
+        // Finished this passage once: notify controller exactly once
+        if (position >= passage.length()) {
             controller.onComputerFinished();
-            running = false;
+            running = false;   // stop further work; future ticks just return above
             return;
         }
 
@@ -38,12 +44,13 @@ public class ComputerOpponent implements Runnable {
 
         // Variable typing speed based on difficulty
         try {
-            int baseSpeed = 150 - (difficulty * 10); // faster with higher difficulty
+            int baseSpeed = 250 - (difficulty * 15); // Easy ~235ms, Hard ~115ms
             Thread.sleep(baseSpeed + random.nextInt(50));
         } catch (InterruptedException e) {
             running = false;
         }
     }
+
 
     public void stop() {
         running = false;
