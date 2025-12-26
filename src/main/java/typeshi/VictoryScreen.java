@@ -18,21 +18,44 @@ public class VictoryScreen {
 
     private final StackPane root = new StackPane();
     private MediaPlayer mediaPlayer;
+    private final Runnable onBack; // optional callback when Back button is pressed
 
+    /**
+     * Main constructor allowing an onBack callback from callers.
+     */
     public VictoryScreen(int playerScore,
                          int computerScore,
                          int playerErrors,
-                         int computerErrors) {
+                         int computerErrors,
+                         Runnable onBack) {
+        this.onBack = onBack;
 
-        // ---------- BACKGROUND GIF ----------
+        // Prevent Enter from activating buttons unintentionally on the victory screen
+        root.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ENTER) {
+                e.consume();
+            }
+        });
+
+        // ---------- BACKGROUND GIF (robust) ----------
         // Put file at: src/main/resources/images/victory.gif
-        Image bgImage = new Image(
-                getClass().getResource("/images/victory.gif").toExternalForm()
-        );
-        ImageView bgView = new ImageView(bgImage);
-        bgView.setPreserveRatio(false); // stretch to fill window
-        bgView.fitWidthProperty().bind(root.widthProperty());
-        bgView.fitHeightProperty().bind(root.heightProperty());
+        ImageView bgView = null;
+        try {
+            var url = getClass().getResource("/images/victory.gif");
+            if (url != null) {
+                Image bgImage = new Image(url.toExternalForm());
+                bgView = new ImageView(bgImage);
+                bgView.setPreserveRatio(false); // stretch to fill window
+                bgView.fitWidthProperty().bind(root.widthProperty());
+                bgView.fitHeightProperty().bind(root.heightProperty());
+            } else {
+                System.err.println("Victory image not found: /images/victory.gif — using fallback background");
+                // fallback background style applied below if no bgView
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            bgView = null;
+        }
 
         // ---------- TEXT / UI OVERLAY ----------
         String winnerText;
@@ -45,34 +68,45 @@ public class VictoryScreen {
         }
 
         Label timesUp = new Label("TIME'S UP");
-        timesUp.setFont(Font.font("Consolas", 40));
-        timesUp.setTextFill(Color.GOLD);
+        timesUp.getStyleClass().add("panel-title");
 
         Label winnerLabel = new Label(winnerText);
-        winnerLabel.setFont(Font.font("Consolas", 32));
-        winnerLabel.setTextFill(
-                playerScore >= computerScore ? Color.LIMEGREEN : Color.CRIMSON
-        );
+        winnerLabel.getStyleClass().add("victory-winner");
 
         Label youStats = new Label(
                 String.format("You: %d points, %d errors", playerScore, playerErrors)
         );
-        youStats.setFont(Font.font("Consolas", 18));
-        youStats.setTextFill(Color.WHITE);
+        youStats.getStyleClass().add("stats");
 
         Label compStats = new Label(
                 String.format("Computer: %d points, %d errors", computerScore, computerErrors)
         );
-        compStats.setFont(Font.font("Consolas", 18));
-        compStats.setTextFill(Color.WHITE);
+        compStats.getStyleClass().add("stats");
 
         Button backButton = new Button("Back to Menu");
-        backButton.setFont(Font.font("Consolas", 16));
+        backButton.setDefaultButton(false);
+        backButton.getStyleClass().addAll("button", "primary");
         backButton.setOnAction(e -> {
             if (mediaPlayer != null) {
                 mediaPlayer.stop();
             }
-            root.getScene().getWindow().hide();
+            if (this.onBack != null) {
+                try { this.onBack.run(); } catch (Exception ex) { ex.printStackTrace(); }
+            } else {
+                try {
+                    // Replace the current scene root with the Home screen so the player returns to menu
+                    if (root.getScene() != null) {
+                        root.getScene().setRoot(new HomeScreen().getRoot());
+                    } else {
+                        // Fallback: hide window if scene is unexpectedly null
+                        root.getScene().getWindow().hide();
+                    }
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    // In case of any error, hide the window as a last resort
+                    if (root.getScene() != null) root.getScene().getWindow().hide();
+                }
+            }
         });
 
         VBox overlay = new VBox(10, timesUp, winnerLabel, youStats, compStats, backButton);
@@ -84,10 +118,32 @@ public class VictoryScreen {
                         "-fx-background-radius: 20;"
         );
 
-        root.getChildren().addAll(bgView, overlay);
-        StackPane.setAlignment(overlay, Pos.TOP_CENTER);
+        VBox centerCard = new VBox(12, timesUp, winnerLabel, youStats, compStats, backButton);
+        centerCard.setAlignment(Pos.CENTER);
+        centerCard.getStyleClass().add("card");
+        centerCard.setMaxWidth(620);
 
+        if (bgView != null) {
+            root.getChildren().addAll(bgView, centerCard);
+        } else {
+            // apply a simple fallback background so the overlay is visible
+            root.setStyle("-fx-background-color: linear-gradient(to bottom, #111111, #2b2b2b);");
+            root.getChildren().add(centerCard);
+        }
+        StackPane.setAlignment(centerCard, Pos.CENTER);
+
+        // Play audio (if available) — kept in separate try/catch within method
         playVictoryMusic(winnerText);
+    }
+
+    /**
+     * Backwards-compatible constructor that does not provide a callback.
+     */
+    public VictoryScreen(int playerScore,
+                         int computerScore,
+                         int playerErrors,
+                         int computerErrors) {
+        this(playerScore, computerScore, playerErrors, computerErrors, null);
     }
 
     private void playVictoryMusic(String winnerText) {

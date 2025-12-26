@@ -14,10 +14,18 @@ public class HomeScreen {
     private Button playButton;
     private Button settingsButton;
     private Button exitButton;
+    private Button instructionsButton; // newly added button
 
     public HomeScreen() {
         root = new StackPane();
         root.setStyle("-fx-background-color: linear-gradient(to bottom right, #141E30, #243B55);");
+
+        // Prevent Enter key from activating buttons unintentionally on this screen
+        root.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ENTER) {
+                e.consume();
+            }
+        });
 
         VBox menuBox = new VBox(20);
         menuBox.setAlignment(Pos.CENTER);
@@ -35,20 +43,46 @@ public class HomeScreen {
         // Play button
         playButton = createButton("Play vs Computer");
 
+        // Instructions button (new)
+        instructionsButton = createButton("Instructions");
+        instructionsButton.setOnAction(e -> {
+            // Action wired in Main
+        });
+
         // Settings button
         settingsButton = createButton("Settings");
 
-        // Exit button
+        // Exit button (danger style)
         exitButton = createButton("Exit");
+        exitButton.setStyle(
+                "-fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 10 40 10 40;"
+        );
+        exitButton.setOnMouseEntered(e -> exitButton.setStyle(
+                "-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 10 40 10 40;"
+        ));
+        exitButton.setOnMouseExited(e -> exitButton.setStyle(
+                "-fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b);" +
+                        "-fx-text-fill: white;" +
+                        "-fx-background-radius: 20;" +
+                        "-fx-padding: 10 40 10 40;"
+        ));
         exitButton.setOnAction(e -> System.exit(0));
 
-        menuBox.getChildren().addAll(title, playButton, settingsButton, exitButton);
+        menuBox.getChildren().addAll(title, playButton, instructionsButton, settingsButton, exitButton);
         root.getChildren().add(menuBox);
     }
 
     private Button createButton(String text) {
         Button btn = new Button(text);
         btn.setFont(Font.font("Consolas", 24));
+        // Prevent this button from being treated as the scene's default button
+        btn.setDefaultButton(false);
         btn.setStyle(
                 "-fx-background-color: linear-gradient(to right, #00b09b, #96c93d);" +
                         "-fx-text-fill: white;" +
@@ -85,4 +119,6 @@ public class HomeScreen {
     public Button getExitButton() {
         return exitButton;
     }
+
+    public Button getInstructionsButton() { return instructionsButton; }
 }
