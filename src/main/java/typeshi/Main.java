@@ -164,7 +164,7 @@ public class Main extends Application {
 
         scene.setRoot(ui.rootPane);
 
-        controller.startGameWithCountdown(20, aiDifficulty);
+        controller.startGameWithCountdown(60, aiDifficulty);
     }
 
     public static void main(String[] args) {
