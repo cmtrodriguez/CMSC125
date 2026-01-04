@@ -27,6 +27,12 @@ public class UIComponents {
     public Label timerLabel;
     public VBox logBox;
 
+    // add fields
+    public Label playerTitleLabel;
+    public Label opponentTitleLabel;
+    public Label bottomInstructionLabel;
+
+
     public Button pauseButton; // pause control shown during rounds
 
     private GameController controller;
@@ -91,9 +97,10 @@ public class UIComponents {
         playerArea = new VBox(15);
         playerArea.setAlignment(Pos.TOP_CENTER);
 
-        Label playerLabel = new Label("You");
-        playerLabel.setFont(Font.font("Consolas", 20));
-        playerLabel.setTextFill(Color.LIMEGREEN);
+        playerTitleLabel = new Label("You");
+        playerTitleLabel.setFont(Font.font("Consolas", 20));
+        playerTitleLabel.setTextFill(Color.LIMEGREEN);
+
 
         targetTextFlow = new TextFlow();
         targetTextFlow.setPrefHeight(200);
@@ -113,7 +120,7 @@ public class UIComponents {
         playerScoreLabel.setTextFill(Color.WHITE);
 
         playerArea.getChildren().addAll(
-                playerLabel,
+                playerTitleLabel,
                 targetTextFlow,
                 inputField,
                 playerProgress,
@@ -124,9 +131,9 @@ public class UIComponents {
         computerArea = new VBox(15);
         computerArea.setAlignment(Pos.TOP_CENTER);
 
-        Label compLabel = new Label("Computer");
-        compLabel.setFont(Font.font("Consolas", 20));
-        compLabel.setTextFill(Color.RED);
+        opponentTitleLabel = new Label("Computer"); // default for singleplayer
+        opponentTitleLabel.setFont(Font.font("Consolas", 20));
+        opponentTitleLabel.setTextFill(Color.RED);
 
         computerTextFlow = new TextFlow();
         computerTextFlow.setPrefHeight(200);
@@ -149,7 +156,7 @@ public class UIComponents {
         );
 
         computerArea.getChildren().addAll(
-                compLabel,
+                opponentTitleLabel,
                 computerTextFlow,
                 computerProgress,
                 computerScoreLabel,
@@ -181,13 +188,11 @@ public class UIComponents {
         bottom.setAlignment(Pos.CENTER);
         bottom.setPadding(new Insets(10));
 
-        Label instructions = new Label(
-                "Type the text above. Correct letters = green, wrong letters = red. Watch the computer type!"
-        );
-        instructions.setFont(Font.font("Consolas", 14));
-        instructions.setTextFill(Color.WHITE);
+        bottomInstructionLabel = new Label("Type the text above. Correct letters = green, wrong letters = red. Watch the computer type!");
+        bottomInstructionLabel.setFont(Font.font("Consolas", 14));
+        bottomInstructionLabel.setTextFill(Color.WHITE);
+        bottom.getChildren().add(bottomInstructionLabel);
 
-        bottom.getChildren().add(instructions);
         rootPane.setBottom(bottom);
     }
 
