@@ -3,7 +3,8 @@ package typeshi;
 import java.io.*;
 import java.net.*;
 
-public class MultiplayerServer {
+public class
+MultiplayerServer {
 
     private ServerSocket serverSocket;
     private Socket clientSocket;
