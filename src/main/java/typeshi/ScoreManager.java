@@ -1,7 +1,8 @@
 package typeshi;
 
 
-public class ScoreManager {
+public class
+ScoreManager {
     private double playerProgress = 0;
     private double computerProgress = 0;
     private int playerErrors = 0;
@@ -21,6 +22,12 @@ public class ScoreManager {
     public void setComputerProgress(double p) { computerProgress = p; }
     public void setPlayerErrors(int e) { playerErrors = e; }
     public void setComputerErrors(int e) { computerErrors = e; }
+
+    public int getPlayerScore() { return playerScore; }
+    public int getComputerScore() { return computerScore; }
+    public int getPlayerErrors() { return playerErrors; }
+    public int getComputerErrors() { return computerErrors; }
+
 
 
     public void awardPlayer(int amount) { playerScore += amount; }
