@@ -434,7 +434,6 @@ public class GameController {
 
     // -------------------- PLAYER INPUT --------------------
     private void onPlayerType() {
-
         String typedRaw = ui.inputField.getText();
 
         // BACKSPACE do not count errors
@@ -447,33 +446,33 @@ public class GameController {
         if (!running || adjustingInput) return;
 
         var children = ui.targetTextFlow.getChildren();
-
-        // cap for safety if user pastes extra characters
         int cappedLen = Math.min(typedRaw.length(), children.size());
         String typed = typedRaw.substring(0, cappedLen);
 
         int correctCount = 0;
-        boolean hasNewError = false; // Track if user just made a NEW mistake (for screen shake)
+        boolean hasNewError = false;
 
         for (int i = 0; i < children.size(); i++) {
             Text t = (Text) children.get(i);
+            char targetChar = t.getText().charAt(0);
+
             if (i < cappedLen) {
-                char targetChar = t.getText().charAt(0);
-                if (typedRaw.charAt(i) == targetChar) {
+                char typedChar = typedRaw.charAt(i);
+
+                if (typedChar == targetChar) {
                     correctCount++;
                     if (!t.getFill().equals(Color.TRANSPARENT)) {
                         t.setFill(Color.LIMEGREEN);
                     }
                 } else {
-                    // Detect NEW error for screen shake (was white, now wrong)
-                    if (mode == 3 && t.getFill().equals(Color.WHITE)) {
+                    // Count NEW errors only once per character
+                    if (!t.getFill().equals(Color.RED) && !t.getFill().equals(Color.TRANSPARENT)) {
+                        playerCumulativeErrors++;
+                        scoreManager.setPlayerErrors(playerCumulativeErrors);
                         hasNewError = true;
-                    }
 
-                    // MEDIUM & HARD: Delayed red feedback (invisible errors)
-                    if (mode == 2 || mode == 3) {
-                        // Keep white for 0.5 seconds, then turn red
-                        if (!t.getFill().equals(Color.TRANSPARENT)) {
+                        if (mode == 2 || mode == 3) {
+                            // Medium & Hard: delayed red feedback
                             t.setFill(Color.WHITE);
                             final int index = i;
                             Timeline delay = new Timeline(new KeyFrame(Duration.millis(500), e -> {
@@ -486,10 +485,8 @@ public class GameController {
                                 }
                             }));
                             delay.play();
-                        }
-                    } else {
-                        // EASY: immediate red feedback
-                        if (!t.getFill().equals(Color.TRANSPARENT)) {
+                        } else {
+                            // EASY: immediate red feedback
                             t.setFill(Color.RED);
                         }
                     }
@@ -501,60 +498,24 @@ public class GameController {
             }
         }
 
-        // HARD: Screen shake on wrong letter
+        // HARD: Screen shake on new error
         if (mode == 3 && hasNewError) {
             shakeScreen();
         }
 
+        // Update player progress
         double progress = children.isEmpty() ? 0.0 : (double) correctCount / children.size();
         ui.playerProgress.setProgress(progress);
-
-        // how many *new* correct chars since last keystroke
-        int prevCorrectCount = lastCorrectCount;
-        int deltaCorrect = correctCount - prevCorrectCount;
-        if (deltaCorrect > 0) {
-            scoreManager.awardPlayer(deltaCorrect);
-        }
-        lastCorrectCount = correctCount;
-
-        cappedLen = Math.min(typedRaw.length(), children.size());
-
-        // Determine the number of newly typed letters
-        int prevTypedLen = lastCorrectCount; // track last correct prefix length
-        int typedLen = typed.length();
-        int newErrors = 0;
-
-        if (typedRaw.length() > lastTypedLength) {
-            int i = typedRaw.length() - 1;
-
-            if (i < playerPassage.length()
-                    && typedRaw.charAt(i) != playerPassage.charAt(i)) {
-
-                newErrors = 1;
-                ((Text) ui.targetTextFlow.getChildren().get(i)).setFill(Color.RED);
-            }
-        }
-        if (newErrors == 1) {
-            playerCumulativeErrors++;
-            scoreManager.setPlayerErrors(playerCumulativeErrors);
-        }
-
-        if (newErrors == 1) {
-            playerCumulativeErrors++;
-            scoreManager.setPlayerErrors(playerCumulativeErrors);
-        }
-
         scoreManager.setPlayerProgress(progress);
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
 
-        // MULTIPLAYER: send progress to remote on every change
-        if (multiplayer && networkOpponent != null) {
-            networkOpponent.sendProgress(correctCount, newErrors);
-        }
+        // Award new correct characters
+        int deltaCorrect = correctCount - lastCorrectCount;
+        if (deltaCorrect > 0) scoreManager.awardPlayer(deltaCorrect);
+        lastCorrectCount = correctCount;
 
         // MEDIUM & HARD: Auto-backspace after completing a correct word (ONCE per position only)
         if ((mode == 2 || mode == 3) && typedRaw.length() > 0 && typedRaw.charAt(typedRaw.length() - 1) == ' ') {
-            // Check if the word just completed was entirely correct
             int wordStart = typedRaw.lastIndexOf(' ', typedRaw.length() - 2) + 1;
             boolean wordCorrect = true;
             for (int i = wordStart; i < typedRaw.length() - 1; i++) {
@@ -564,15 +525,13 @@ public class GameController {
                 }
             }
 
-            // Only backspace if: word is correct AND this position hasn't been backspaced before
-            int backspacePosition = typedRaw.length() - 2; // The character to be removed
+            int backspacePosition = typedRaw.length() - 2; // The character to remove
             if (wordCorrect && typedRaw.length() > 1 && !backspacedPositions.contains(backspacePosition)) {
-                backspacedPositions.add(backspacePosition); // Mark this position as backspaced
+                backspacedPositions.add(backspacePosition);
                 adjustingInput = true;
                 Timeline backspaceDelay = new Timeline(new KeyFrame(Duration.millis(100), e -> {
                     String current = ui.inputField.getText();
                     if (current.length() > 1) {
-                        // Remove one character before the space
                         String newText = current.substring(0, current.length() - 2) + " ";
                         ui.inputField.setText(newText);
                         ui.inputField.positionCaret(newText.length());
@@ -583,34 +542,26 @@ public class GameController {
             }
         }
 
-        // Inside onPlayerType() ...
+        // Check if player finished the passage
         if (typed.equals(playerPassage)) {
             playerFinishedCount++;
+            Platform.runLater(() -> ui.logBox.getChildren().add(
+                    new Label("You finished a passage! (" + playerFinishedCount + ")")
+            ));
 
-            Platform.runLater(() ->
-                    ui.logBox.getChildren().add(
-                            new Label("You finished a passage! (" + playerFinishedCount + ")")
-                    )
-            );
-
-            if (multiplayer) {
-                if (networkOpponent != null) networkOpponent.sendFinished();
-
-                adjustingInput = true;
-                Platform.runLater(() -> {
-                    startPlayerPassage();
-                    adjustingInput = false;
-                });
-                return;
+            if (multiplayer && networkOpponent != null) {
+                networkOpponent.sendFinished();
             }
 
-            // Singleplayer logic (already handles looping)
             adjustingInput = true;
             Platform.runLater(() -> {
                 startPlayerPassage();
                 adjustingInput = false;
             });
         }
+
+        // Update last typed length for next keystroke
+        lastTypedLength = typedRaw.length();
     }
 
 
