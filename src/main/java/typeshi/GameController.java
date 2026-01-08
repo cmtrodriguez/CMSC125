@@ -1087,20 +1087,21 @@ public class GameController {
         if (gameEnded) return;
         gameEnded = true;
 
-        if (multiplayer && networkOpponent != null && opponentFinalScore == null) {
+        // mark local final sent and send final score (if multiplayer)
+        if (multiplayer && networkOpponent != null && !localFinalScoreSent) {
+            localFinalScoreSent = true;
             networkOpponent.sendFinalScore(
                     scoreManager.getPlayerScore(),
                     scoreManager.getPlayerErrors()
             );
         }
+
         if (!running) return;
         running = false;
 
         if (backgroundPool != null) backgroundPool.shutdownNow();
         if (hardFadeFuture != null) { hardFadeFuture.cancel(false); hardFadeFuture = null; }
 
-        // stop network loop if any (we keep networkOpponent alive until final exchange completes)
-        try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
 
         // If singleplayer match has more rounds, start next round after a short "round done" overlay
         if (!multiplayer && currentRound < totalRounds) {
@@ -1149,17 +1150,12 @@ public class GameController {
 
         // Multiplayer: send final score and wait for opponent final score (do not reveal opponent mid-game)
         if (multiplayer) {
-            // mark local final sent
-            localFinalScoreSent = true;
-
-            if (networkOpponent != null) {
-                networkOpponent.sendFinalScore(scoreManager.getPlayerScore(), scoreManager.getPlayerErrors());
-            }
-
-            // if opponent already sent their final score, show results immediately
+            // already sent above if necessary
             if (opponentFinalScore != null) {
-                Platform.runLater(this::showMultiplayerResults);
+                // Opponent already sent -> show results (with a short delay so UI is stable)
+                delayedShowMultiplayerResults(250);
             } else {
+                // wait asynchronously for opponent final score (timeout inside)
                 waitForFinalScores();
             }
             return;
@@ -1191,26 +1187,29 @@ public class GameController {
             while (opponentFinalScore == null) {
                 try { Thread.sleep(50); } catch (InterruptedException ignored) {}
 
-                // 🔥 safety timeout (prevents infinite hang)
+                // safety timeout (prevents infinite hang)
                 if (System.currentTimeMillis() - start > 5000) {
                     break;
                 }
             }
 
-            Platform.runLater(() -> {
-                VictoryScreen victory = new VictoryScreen(
-                        scoreManager.getPlayerScore(),
-                        opponentFinalScore != null ? opponentFinalScore : 0,
-                        scoreManager.getPlayerErrors(),
-                        opponentFinalErrors != null ? opponentFinalErrors : 0,
-                        onReturnToMenu,
-                        true
-                );
-                ui.rootPane.getScene().setRoot(victory.getRoot());
-            });
+            // show results (with a tiny additional delay to allow last packet processing)
+            delayedShowMultiplayerResults(200);
+
         }).start();
     }
 
+    /**
+     * Show multiplayer results after a short delay (off-FX thread).
+     * This ensures symmetric behavior and gives the remote side a brief window
+     * to finish sending its final packet.
+     */
+    private void delayedShowMultiplayerResults(int delayMillis) {
+        new Thread(() -> {
+            try { Thread.sleep(Math.max(0, delayMillis)); } catch (InterruptedException ignored) {}
+            Platform.runLater(this::showMultiplayerResults);
+        }).start();
+    }
 
     private void showMultiplayerResults() {
         // safe defaults if something went wrong
@@ -1233,7 +1232,40 @@ public class GameController {
             );
 
             ui.rootPane.getScene().setRoot(victory.getRoot());
+
+            // Cleanup network AFTER displaying results (important!)
+            safeNetworkCleanup();
         });
+    }
+
+    /**
+     * Stop and null network resources safely. Called AFTER results are displayed.
+     */
+    private void safeNetworkCleanup() {
+        try {
+            if (networkOpponent != null) {
+                networkOpponent.stop();
+                networkOpponent = null;
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            if (mpClient != null) {
+                mpClient.close();
+                mpClient = null;
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            if (mpServer != null) {
+                mpServer.close();
+                mpServer = null;
+            }
+        } catch (Exception ignored) {}
+
+        multiplayer = false;
+        multiplayerActive = false;
+        isHost = false;
     }
 
     // Ensure multiplayer lobby shows the back button in case parent HBox isn't found
@@ -1548,9 +1580,9 @@ public class GameController {
         opponentFinalScore = score;
         opponentFinalErrors = errors;
 
-        // If we've already sent our final score, immediately show results
+        // If we've already sent our final score, show results (delayed slightly for safety)
         if (localFinalScoreSent) {
-            Platform.runLater(this::showMultiplayerResults);
+            delayedShowMultiplayerResults(200);
         }
     }
 }
