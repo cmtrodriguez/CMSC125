@@ -1,21 +1,21 @@
 package typeshi;
 
+import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.text.Font;
 import javafx.scene.text.Text;
-import javafx.scene.control.Button;
-import javafx.scene.layout.VBox;
-import javafx.geometry.Insets;
-import javafx.scene.Scene;
-import javafx.stage.Stage;
 import javafx.stage.Modality;
+import javafx.stage.Stage;
 import javafx.stage.StageStyle;
 import javafx.stage.Window;
 import javafx.util.Duration;
@@ -26,6 +26,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * GameController
+ * - Singleplayer: runs ComputerOpponent on a scheduler (your existing logic).
+ * - Multiplayer: does NOT run ComputerOpponent; instead, sends PROGRESS/FINISHED and updates
+ *   the "computer" side UI from incoming network messages (via updateComputerProgress + onComputerFinished).
+ */
 public class GameController {
 
     private final UIComponents ui;
@@ -39,11 +45,22 @@ public class GameController {
     private int currentDifficulty = 5;
 
     private boolean paused = false; // pause state
-    private StackPane pauseOverlay; // deprecated: previously used overlay
+    private StackPane pauseOverlay; // legacy overlay (not used when modal stage exists)
     private Stage pauseStage = null; // modal stage for pause dialog
     private int initialDurationSeconds = 0; // preserve initial duration for restart
 
+    // ===== MULTIPLAYER =====
+    private boolean multiplayer = false;
+    private boolean isHost = false;
+    private NetworkOpponent networkOpponent;
+    private MultiplayerServer mpServer;
+    private MultiplayerClient mpClient;
 
+    private int lastOpponentPosition = 0;
+    private int lastOpponentErrors = 0;
+
+    private int multiplayerRoundSeconds = 20;
+    private int multiplayerPort = 5000;
 
     // scoring
     private final ScoreManager scoreManager = new ScoreManager();
@@ -74,9 +91,12 @@ public class GameController {
     // track if current computer passage has already been handled
     private boolean computerPassageDone = false;
 
+    private Runnable onReturnToMenu = null;
+
     public GameController(UIComponents ui) {
         this.ui = ui;
         this.wordGenerator = new WordGenerator();
+
         // allow tests to pass null for UI to avoid JavaFX initialization
         if (this.ui != null) {
             setupGameUI();
@@ -86,6 +106,10 @@ public class GameController {
     // Call this from outside before startGame: 1=Easy, 2=Medium, 3=Hard
     public void setMode(int mode) {
         this.mode = mode;
+    }
+
+    public void setOnReturnToMenu(Runnable onReturnToMenu) {
+        this.onReturnToMenu = onReturnToMenu;
     }
 
     private void setupGameUI() {
@@ -118,7 +142,7 @@ public class GameController {
             ui.targetTextFlow.getChildren().add(t);
         }
 
-        // build computer TextFlow
+        // build "computer" TextFlow
         ui.computerTextFlow.getChildren().clear();
         for (char c : computerPassage.toCharArray()) {
             Text t = new Text(String.valueOf(c));
@@ -132,13 +156,14 @@ public class GameController {
         ui.computerProgress.setProgress(0);
         lastCorrectCount = 0;
 
+        lastOpponentPosition = 0;
+        lastOpponentErrors = 0;
+
         // prepare pause control
         if (ui.pauseButton != null) {
             ui.pauseButton.setDisable(false);
             ui.pauseButton.setVisible(true);
             ui.pauseButton.setOnAction(e -> togglePause());
-
-
         }
     }
 
@@ -181,10 +206,10 @@ public class GameController {
         ui.rootPane.setCenter(centerStack);
 
         Timeline timeline = new Timeline(
-                new KeyFrame(Duration.seconds(0),  e -> countdownText.setText("3")),
-                new KeyFrame(Duration.seconds(1),  e -> countdownText.setText("2")),
-                new KeyFrame(Duration.seconds(2),  e -> countdownText.setText("1")),
-                new KeyFrame(Duration.seconds(3),  e -> countdownText.setText("GO!")),
+                new KeyFrame(Duration.seconds(0), e -> countdownText.setText("3")),
+                new KeyFrame(Duration.seconds(1), e -> countdownText.setText("2")),
+                new KeyFrame(Duration.seconds(2), e -> countdownText.setText("1")),
+                new KeyFrame(Duration.seconds(3), e -> countdownText.setText("GO!")),
                 new KeyFrame(Duration.seconds(3.5), e -> {
                     // remove overlay: restore original center node
                     ui.rootPane.setCenter(originalCenter);
@@ -196,18 +221,12 @@ public class GameController {
         timeline.play();
     }
 
-    // -------------------- START GAME (ACTUAL TIMER + AI) --------------------
-    private Runnable onReturnToMenu = null;
-
-    public void setOnReturnToMenu(Runnable onReturnToMenu) {
-        this.onReturnToMenu = onReturnToMenu;
-    }
-
+    // -------------------- START GAME (TIMER + AI/NETWORK) --------------------
     public void startGame(int durationSeconds, int difficulty) {
         if (running) return;
         running = true;
-        remainingSeconds = durationSeconds;
 
+        remainingSeconds = durationSeconds;
         currentDifficulty = difficulty;
 
         scoreManager.reset();
@@ -215,17 +234,23 @@ public class GameController {
         computerFinishedCount = 0;
         lastCorrectCount = 0;
 
+        lastOpponentPosition = 0;
+        lastOpponentErrors = 0;
+
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
         ui.computerScoreLabel.setText(scoreManager.computerSummary());
 
-        // Scheduled thread pool for AI + timer (+ optional fade)
+        // Scheduled thread pool for timer (+ optional fade). AI only when NOT multiplayer.
         backgroundPool = Executors.newScheduledThreadPool(3);
 
-        computer = new ComputerOpponent(computerPassage, this, currentDifficulty);
-        // schedule a wrapper so we can pause the AI without cancelling the executor
-        backgroundPool.scheduleAtFixedRate(() -> {
-            if (!paused && computer != null) computer.run();
-        }, 0, 100, TimeUnit.MILLISECONDS);
+        if (!multiplayer) {
+            computer = new ComputerOpponent(computerPassage, this, currentDifficulty);
+            backgroundPool.scheduleAtFixedRate(() -> {
+                if (!paused && computer != null) computer.run();
+            }, 0, 100, TimeUnit.MILLISECONDS);
+        } else {
+            computer = null; // opponent is remote
+        }
 
         // Countdown timer (pause-aware)
         backgroundPool.scheduleAtFixedRate(() -> {
@@ -236,7 +261,7 @@ public class GameController {
             if (remainingSeconds <= 0) endGame();
         }, 1, 1, TimeUnit.SECONDS);
 
-        // HARD: fade words at a fixed interval (e.g., every 3 seconds)
+        // HARD: fade words at a fixed interval
         if (mode == 3) {
             fadeIndex = 0;
             backgroundPool.scheduleAtFixedRate(
@@ -265,6 +290,30 @@ public class GameController {
         lastCorrectCount = 0;
     }
 
+    public void prepareMultiplayerLobbyUI(String statusText) {
+        if (ui == null) return;
+
+        // change labels (requires UIComponents fields; see Fix 2)
+        if (ui.opponentTitleLabel != null) ui.opponentTitleLabel.setText("Player");
+        if (ui.bottomInstructionLabel != null) ui.bottomInstructionLabel.setText(statusText);
+
+        ui.inputField.clear();
+        ui.inputField.setDisable(true);
+
+        ui.targetTextFlow.getChildren().clear();
+        ui.computerTextFlow.getChildren().clear();
+
+        ui.playerProgress.setProgress(0);
+        ui.computerProgress.setProgress(0);
+
+        ui.timerLabel.setText("00:00");
+        ui.playerScoreLabel.setText("Score: 0 | Errors: 0");
+        ui.computerScoreLabel.setText("Score: 0 | Errors: 0");
+
+        ui.logBox.getChildren().clear();
+    }
+
+
     // -------------------- START NEW PASSAGE (COMPUTER ONLY) --------------------
     private void startComputerPassage() {
         computerPassageIndex++; // AI moves ahead in shared sequence
@@ -287,17 +336,20 @@ public class GameController {
         // ignore while not running or while we are programmatically changing text
         if (!running || adjustingInput) return;
 
-        String typed = ui.inputField.getText();
+        String typedRaw = ui.inputField.getText();
         var children = ui.targetTextFlow.getChildren();
+
+        // cap for safety if user pastes extra characters
+        int cappedLen = Math.min(typedRaw.length(), children.size());
 
         int correctCount = 0;
 
         for (int i = 0; i < children.size(); i++) {
             Text t = (Text) children.get(i);
 
-            if (i < typed.length()) {
+            if (i < cappedLen) {
                 char targetChar = t.getText().charAt(0);
-                if (typed.charAt(i) == targetChar) {
+                if (typedRaw.charAt(i) == targetChar) {
                     correctCount++;
                     if (!t.getFill().equals(Color.TRANSPARENT)) {
                         t.setFill(Color.LIMEGREEN);
@@ -314,7 +366,7 @@ public class GameController {
             }
         }
 
-        double progress = (double) correctCount / children.size();
+        double progress = children.isEmpty() ? 0.0 : (double) correctCount / children.size();
         ui.playerProgress.setProgress(progress);
 
         // how many *new* correct chars since last keystroke
@@ -324,38 +376,46 @@ public class GameController {
         }
         lastCorrectCount = correctCount;
 
+        int errors = Math.max(0, cappedLen - correctCount);
+
         // errors in this passage
-        scoreManager.setPlayerErrors(typed.length() - correctCount);
+        scoreManager.setPlayerErrors(errors);
         scoreManager.setPlayerProgress(progress);
 
-        // show the formatted summary: "Score: X | Errors: Y"
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
 
-        // NOTE: previous behavior removed trailing spaces after words in MEDIUM mode.
-        // That prevented users from typing normal spaces; remove that behavior so spaces work normally.
-        // (No auto-trim.)
+        // MULTIPLAYER: send progress to remote on every change
+        if (multiplayer && networkOpponent != null) {
+            networkOpponent.sendProgress(correctCount, errors);
+        }
 
         // Player finished their passage
-        if (typed.equals(playerPassage)) {
+        if (typedRaw.equals(playerPassage)) {
             playerFinishedCount++;
 
             adjustingInput = true;
+            Platform.runLater(() -> ui.logBox.getChildren().add(
+                    new Label("You finished a passage! (" + playerFinishedCount + ")")
+            ));
+
+            // MULTIPLAYER: finishing ends the round (race style)
+            if (multiplayer) {
+                if (networkOpponent != null) networkOpponent.sendFinished();
+                endGame();
+                adjustingInput = false;
+                return;
+            }
+
+            // SINGLEPLAYER: only player moves to next passage in shared sequence
             Platform.runLater(() -> {
-                ui.logBox.getChildren().add(
-                        new Label("You finished a passage! (" + playerFinishedCount + ")")
-                );
-
-                // Only player moves to next passage in shared sequence
                 startPlayerPassage();
-
                 adjustingInput = false;
             });
-
-            return;
         }
     }
 
     // Helper: did the player just finish a correct word? (space-ended words only)
+    @SuppressWarnings("unused")
     private boolean justFinishedWord(String typed, String passage) {
         int len = typed.length();
         if (len == 0 || len > passage.length()) return false;
@@ -392,18 +452,30 @@ public class GameController {
         }
     }
 
-    // -------------------- COMPUTER UPDATES --------------------
+    // -------------------- COMPUTER / OPPONENT UPDATES --------------------
+    /**
+     * Called by:
+     * - AI path (singleplayer): ComputerOpponent (indirectly)
+     * - Multiplayer path: NetworkOpponent receives "PROGRESS:pos:errors"
+     *
+     * In multiplayer, position is treated as absolute correct characters typed by remote.
+     */
     public void updateComputerProgress(int position, int errors) {
+        if (multiplayer) {
+            updateOpponentFromNetwork(position, errors);
+            return;
+        }
         // Backwards compatible: treat last typed char as correct
         updateComputerTyping(position, errors, true);
     }
 
     /**
-     * Update the UI to reflect a new typing event from the computer opponent.
+     * AI-only UI update.
      * lastWasCorrect indicates whether the most recently typed character was correct.
      */
     public void updateComputerTyping(int position, int errors, boolean lastWasCorrect) {
         if (ui == null) return; // allow headless tests to run without JavaFX
+
         Platform.runLater(() -> {
             int total = ui.computerTextFlow.getChildren().size();
             double progress = total == 0 ? 0.0 : (double) position / total;
@@ -418,7 +490,6 @@ public class GameController {
             // Update computer text coloring & caret (underline next char)
             for (int i = 0; i < total; i++) {
                 Text t = (Text) ui.computerTextFlow.getChildren().get(i);
-                // underline the next character (acts as a caret); no underline if finished
                 t.setUnderline(i == position);
 
                 if (i < position - 1) {
@@ -432,12 +503,58 @@ public class GameController {
         });
     }
 
+    /**
+     * Multiplayer-only: update opponent UI + scoring from absolute position/errors sent over network.
+     */
+    private void updateOpponentFromNetwork(int position, int errors) {
+        if (ui == null) return;
+
+        Platform.runLater(() -> {
+            int total = ui.computerTextFlow.getChildren().size();
+            int pos = Math.max(0, Math.min(position, total));
+
+            double progress = total == 0 ? 0.0 : (double) pos / total;
+            ui.computerProgress.setProgress(progress);
+
+            int delta = pos - lastOpponentPosition;
+            if (delta > 0) scoreManager.awardComputer(delta);
+
+            scoreManager.setComputerProgress(progress);
+            scoreManager.setComputerErrors(Math.max(0, errors));
+            ui.computerScoreLabel.setText(scoreManager.computerSummary());
+
+            // simple coloring (green for correct positions)
+            for (int i = 0; i < total; i++) {
+                Text t = (Text) ui.computerTextFlow.getChildren().get(i);
+                t.setUnderline(i == pos);
+                if (i < pos) t.setFill(Color.LIMEGREEN);
+                else t.setFill(Color.GRAY);
+            }
+
+            lastOpponentPosition = pos;
+            lastOpponentErrors = Math.max(0, errors);
+        });
+    }
+
+    /**
+     * Called by:
+     * - AI path: when ComputerOpponent finishes a passage
+     * - Multiplayer path: NetworkOpponent receives "FINISHED"
+     *
+     * In multiplayer, FINISHED ends the round.
+     */
     public void onComputerFinished() {
         Platform.runLater(() -> {
-            // ignore if round is over or this passage was already processed
-            if (!running || remainingSeconds <= 0 || computerPassageDone) {
+            if (!running || remainingSeconds <= 0) return;
+
+            if (multiplayer) {
+                ui.logBox.getChildren().add(new Label("Opponent finished the passage."));
+                endGame();
                 return;
             }
+
+            // SINGLEPLAYER behavior (your existing logic)
+            if (computerPassageDone) return;
             computerPassageDone = true;
 
             computerFinishedCount++;
@@ -451,36 +568,45 @@ public class GameController {
             // Restart AI with new passage
             if (computer != null) computer.stop();
             computer = new ComputerOpponent(computerPassage, this, currentDifficulty);
-            backgroundPool.scheduleAtFixedRate(() -> { if (!paused && computer != null) computer.run(); }, 0, 100, TimeUnit.MILLISECONDS);
+
+            if (backgroundPool != null) {
+                backgroundPool.scheduleAtFixedRate(
+                        () -> { if (!paused && computer != null) computer.run(); },
+                        0, 100, TimeUnit.MILLISECONDS
+                );
+            }
         });
     }
 
     // -------------------- PAUSE / RESUME / RESTART --------------------
     private void togglePause() {
         if (!running) return;
-        if (paused) resumeGame(); else pauseGame();
+        if (paused) resumeGame();
+        else pauseGame();
     }
 
     private void pauseGame() {
         paused = true;
-        // update pause button label to show resume affordance
         if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("▶ Resume");
-        // show overlay with controls
         Platform.runLater(this::showPauseOverlay);
-        // disable player input while paused
         if (ui != null) ui.inputField.setDisable(true);
     }
 
     private void resumeGame() {
         paused = false;
-        // restore pause button label
         if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("⏸ Pause");
         Platform.runLater(this::hidePauseOverlay);
         if (ui != null) ui.inputField.setDisable(false);
     }
 
     private void restartRound() {
-        // Stop current background tasks and prepare for a fresh round
+        // Restarting mid-multiplayer without resync will desync both players.
+        // Safest behavior: return to menu.
+        if (multiplayer) {
+            returnToHomeFromPause();
+            return;
+        }
+
         if (backgroundPool != null) {
             backgroundPool.shutdownNow();
             backgroundPool = null;
@@ -488,16 +614,11 @@ public class GameController {
         running = false;
         paused = false;
 
-        // Update UI and immediately start the countdown for a new round
         Platform.runLater(() -> {
-            // Close any pause modal/stage and disable pause button until the new round starts
             hidePauseOverlay();
             if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
 
-            // Reset UI for a fresh round (clears passages and progress)
             setupGameUI();
-
-            // Start the countdown which will start the new round when complete
             startGameWithCountdown(initialDurationSeconds, currentDifficulty);
         });
     }
@@ -506,19 +627,20 @@ public class GameController {
         if (backgroundPool != null) backgroundPool.shutdownNow();
         running = false;
         paused = false;
+
+        // stop network loop if any
+        try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
+
         Platform.runLater(() -> {
             hidePauseOverlay();
             if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
-
             if (onReturnToMenu != null) onReturnToMenu.run();
         });
     }
 
     private void showPauseOverlay() {
-        // Use a modal stage to ensure the dialog is centered over the app window
         if (ui == null || ui.rootPane == null || ui.rootPane.getScene() == null) return;
 
-        // Close any previous modal
         if (pauseStage != null) {
             try { pauseStage.close(); } catch (Exception ignored) {}
             pauseStage = null;
@@ -537,8 +659,7 @@ public class GameController {
         VBox menu = new VBox(12);
         menu.setMaxWidth(320);
         menu.setPrefWidth(320);
-        menu.setAlignment(javafx.geometry.Pos.CENTER);
-        // minimal/transparent background so only buttons appear over the dim backdrop
+        menu.setAlignment(Pos.CENTER);
         menu.setStyle("-fx-background-color: transparent; -fx-padding: 8;");
 
         Button resume = new Button("Resume");
@@ -546,71 +667,92 @@ public class GameController {
         resume.getStyleClass().addAll("button", "primary", "modal-button");
         resume.setMaxWidth(Double.MAX_VALUE);
         resume.setPrefHeight(36);
-        resume.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        resume.setFont(Font.font("Consolas", 22));
         resume.setOnAction(e -> {
             modal.close();
             resumeGame();
         });
-        resume.setOnMouseEntered(e -> resume.setStyle("-fx-background-color: linear-gradient(to right, #96c93d, #00b09b); -fx-text-fill: white; -fx-background-radius: 10;"));
-        resume.setOnMouseExited(e -> resume.setStyle("-fx-background-color: linear-gradient(to right, #00b09b, #96c93d); -fx-text-fill: white; -fx-background-radius: 10;"));
+        resume.setOnMouseEntered(e -> resume.setStyle(
+                "-fx-background-color: linear-gradient(to right, #96c93d, #00b09b);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
+        resume.setOnMouseExited(e -> resume.setStyle(
+                "-fx-background-color: linear-gradient(to right, #00b09b, #96c93d);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
 
-        Button restart = new Button("Start Again");
+        Button restart = new Button(multiplayer ? "Back to Menu" : "Start Again");
         restart.setDefaultButton(false);
         restart.getStyleClass().addAll("button", "primary", "modal-button");
         restart.setMaxWidth(Double.MAX_VALUE);
         restart.setPrefHeight(36);
-        restart.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        restart.setFont(Font.font("Consolas", 22));
         restart.setOnAction(e -> {
             modal.close();
             restartRound();
         });
-        restart.setOnMouseEntered(e -> restart.setStyle("-fx-background-color: linear-gradient(to right, #96c93d, #00b09b); -fx-text-fill: white; -fx-background-radius: 10;"));
-        restart.setOnMouseExited(e -> restart.setStyle("-fx-background-color: linear-gradient(to right, #00b09b, #96c93d); -fx-text-fill: white; -fx-background-radius: 10;"));
+        restart.setOnMouseEntered(e -> restart.setStyle(
+                "-fx-background-color: linear-gradient(to right, #96c93d, #00b09b);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
+        restart.setOnMouseExited(e -> restart.setStyle(
+                "-fx-background-color: linear-gradient(to right, #00b09b, #96c93d);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
 
         Button home = new Button("Back to Menu");
         home.setDefaultButton(false);
         home.getStyleClass().addAll("button", "primary", "modal-button");
         home.setMaxWidth(Double.MAX_VALUE);
         home.setPrefHeight(36);
-        home.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        home.setFont(Font.font("Consolas", 22));
         home.setOnAction(e -> {
             modal.close();
             returnToHomeFromPause();
         });
-        home.setOnMouseEntered(e -> home.setStyle("-fx-background-color: linear-gradient(to right, #96c93d, #00b09b); -fx-text-fill: white; -fx-background-radius: 10;"));
-        home.setOnMouseExited(e -> home.setStyle("-fx-background-color: linear-gradient(to right, #00b09b, #96c93d); -fx-text-fill: white; -fx-background-radius: 10;"));
+        home.setOnMouseEntered(e -> home.setStyle(
+                "-fx-background-color: linear-gradient(to right, #96c93d, #00b09b);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
+        home.setOnMouseExited(e -> home.setStyle(
+                "-fx-background-color: linear-gradient(to right, #00b09b, #96c93d);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
 
         Button exit = new Button("Exit Game");
         exit.setDefaultButton(false);
         exit.getStyleClass().addAll("button", "danger", "modal-button");
         exit.setMaxWidth(Double.MAX_VALUE);
         exit.setPrefHeight(36);
-        exit.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        exit.setFont(Font.font("Consolas", 22));
         exit.setOnAction(e -> System.exit(0));
-        exit.setOnMouseEntered(e -> exit.setStyle("-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c); -fx-text-fill: white; -fx-background-radius: 10;"));
-        exit.setOnMouseExited(e -> exit.setStyle("-fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b); -fx-text-fill: white; -fx-background-radius: 10;"));
+        exit.setOnMouseEntered(e -> exit.setStyle(
+                "-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
+        exit.setOnMouseExited(e -> exit.setStyle(
+                "-fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b);"
+                        + " -fx-text-fill: white; -fx-background-radius: 10;"
+        ));
 
         menu.getChildren().addAll(resume, restart, home, exit);
         modalRoot.getChildren().add(menu);
-        StackPane.setAlignment(menu, javafx.geometry.Pos.CENTER);
+        StackPane.setAlignment(menu, Pos.CENTER);
 
-        // Consume Enter events on the modal so pressing Enter doesn't activate other buttons on owner
         modalRoot.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             if (e.getCode() == javafx.scene.input.KeyCode.ENTER) e.consume();
         });
 
         Scene modalScene = new Scene(modalRoot);
-        // Attach app stylesheet so modal buttons match HomeScreen styles
         try {
             var css = getClass().getResource("/typeshi/styles.css");
             if (css != null) modalScene.getStylesheets().add(css.toExternalForm());
         } catch (Exception ex) {
             ex.printStackTrace();
         }
-        modalScene.setFill(javafx.scene.paint.Color.TRANSPARENT);
+        modalScene.setFill(Color.TRANSPARENT);
         modal.setScene(modalScene);
 
-        // keep modal centered over owner when shown/resized
         modal.setOnShown(evt -> centerModalOverOwner(modal, owner));
         owner.widthProperty().addListener((o, a, b) -> centerModalOverOwner(modal, owner));
         owner.heightProperty().addListener((o, a, b) -> centerModalOverOwner(modal, owner));
@@ -618,21 +760,18 @@ public class GameController {
         pauseStage = modal;
         modal.show();
 
-        // initial focus on the menu
         menu.requestFocus();
 
-        // small fade-in for polish
-        javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(180), menu);
+        FadeTransition ft = new FadeTransition(Duration.millis(180), menu);
         menu.setOpacity(0);
         ft.setFromValue(0);
         ft.setToValue(1);
         ft.play();
     }
 
-    // Helper to center modal Stage over owner window
     private void centerModalOverOwner(Stage modal, Window owner) {
         if (modal == null || owner == null) return;
-        // center over owner
+
         double ownerX = owner.getX();
         double ownerY = owner.getY();
         double ownerW = owner.getWidth();
@@ -640,7 +779,7 @@ public class GameController {
 
         double modalW = modal.getWidth();
         double modalH = modal.getHeight();
-        // If modal has not computed size yet, rely on centerOnScreen fallback
+
         if (modalW <= 0 || modalH <= 0) {
             modal.centerOnScreen();
             return;
@@ -653,7 +792,6 @@ public class GameController {
     }
 
     private void hidePauseOverlay() {
-        // Close modal stage if present, otherwise remove the in-root overlay (legacy)
         try {
             if (pauseStage != null) {
                 pauseStage.close();
@@ -669,7 +807,9 @@ public class GameController {
 
     // -------------------- END GAME --------------------
     private void endGame() {
+        if (!running) return;
         running = false;
+
         if (backgroundPool != null) backgroundPool.shutdownNow();
         Platform.runLater(() -> {
             ui.logBox.getChildren().add(
