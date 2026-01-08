@@ -589,9 +589,6 @@ public class GameController {
         });
     }
 
-    /**
-     * Multiplayer-only: update opponent UI + scoring from absolute position/errors sent over network.
-     */
     private void updateOpponentFromNetwork(int position, int errors) {
         if (ui == null) return;
 
@@ -622,13 +619,6 @@ public class GameController {
         });
     }
 
-    /**
-     * Called by:
-     * - AI path: when ComputerOpponent finishes a passage
-     * - Multiplayer path: NetworkOpponent receives "FINISHED"
-     *
-     * In multiplayer, FINISHED ends the round.
-     */
     public void onComputerFinished() {
         Platform.runLater(() -> {
             if (!running || remainingSeconds <= 0) return;

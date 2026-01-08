@@ -109,7 +109,6 @@ public class Main extends Application {
                 });
             }
 
-            // --- Create game screen ---
             UIComponents ui = new UIComponents();
             GameController controller = new GameController(ui);
             ui.setController(controller);
