@@ -88,7 +88,17 @@
 }
 
 .button.danger {
-    -fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b);
+    -fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b) !important;
+}
+
+/* Override for dialog Cancel buttons specifically */
+.dialog-pane .button-bar .button:cancel,
+.dialog-pane .button[text="Cancel"] {
+    -fx-background-color: #ff4b2b !important;
+    -fx-text-fill: white !important;
+    -fx-font-weight: bold !important;
+    -fx-border-color: #ff416c !important;
+    -fx-border-width: 2 !important;
 }
 
 .victory-overlay {
@@ -142,28 +152,63 @@
 
 /* Container for difficulty options - add this class to the VBox/HBox holding the levels */
 .difficulty-container {
-	-fx-spacing: 12; /* space between items */
-	-fx-padding: 8;
+    -fx-spacing: 12; /* space between items */
+    -fx-padding: 8;
 }
 
 /* Each difficulty row */
 .difficulty-box {
-	-fx-background-color: linear-gradient(to right, #1f1f1f, #2b2b2b);
-	-fx-background-radius: 8;
-	-fx-border-radius: 8;
-	-fx-border-color: rgba(255,255,255,0.08);
-	-fx-border-width: 1;
-	-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 8, 0, 0, 3);
-	-fx-padding: 10 14 10 14;
-	-fx-alignment: center-left;
-	/* Keep typography consistent with buttons */
-	-fx-font-family: Consolas;
-	-fx-font-size: 15;
-	-fx-text-fill: white;
+    -fx-background-color: linear-gradient(to right, #1f1f1f, #2b2b2b);
+    -fx-background-radius: 8;
+    -fx-border-radius: 8;
+    -fx-border-color: rgba(255,255,255,0.08);
+    -fx-border-width: 1;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 8, 0, 0, 3);
+    -fx-padding: 10 14 10 14;
+    -fx-alignment: center-left;
+    /* Keep typography consistent with buttons */
+    -fx-font-family: Consolas;
+    -fx-font-size: 15;
+    -fx-text-fill: white;
 }
 
 /* Label inside difficulty box */
 .difficulty-box .label {
-	-fx-text-fill: white;
+    -fx-text-fill: white;
 }
 
+/* Dialog header styling - make it visible! */
+.dialog-pane .header-panel {
+    -fx-background-color: transparent;
+}
+
+.dialog-pane .header-panel .label {
+    -fx-text-fill: white !important;
+    -fx-font-size: 18px !important;
+    -fx-font-weight: bold !important;
+    -fx-font-family: "Consolas" !important;
+}
+
+.dialog-pane {
+    -fx-background-color: linear-gradient(to bottom, #2b2b2b, #1f1f1f);
+}
+
+.dialog-pane .content {
+    -fx-text-fill: white;
+    -fx-font-family: "Consolas";
+}
+
+.dialog-pane .button-bar .button {
+    -fx-font-family: "Consolas";
+}
+
+.dialog-pane .button-bar .button.cancel-button,
+.dialog-pane .cancel-button {
+    -fx-background-color: #ff4b2b !important;
+    -fx-text-fill: white !important;
+    -fx-font-weight: bold !important;
+    -fx-background-radius: 8 !important;
+    -fx-border-color: #ff416c !important;
+    -fx-border-width: 2 !important;
+    -fx-border-radius: 8 !important;
+}

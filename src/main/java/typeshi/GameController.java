@@ -22,6 +22,7 @@ import javafx.stage.Stage;
 import javafx.stage.StageStyle;
 import javafx.stage.Window;
 import javafx.util.Duration;
+import javafx.scene.control.Alert;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -352,9 +353,13 @@ public class GameController {
         backgroundPool.scheduleAtFixedRate(() -> {
             if (paused) return;
             remainingSeconds--;
-            Platform.runLater(() ->
-                    ui.timerLabel.setText(String.format("00:%02d", remainingSeconds)));
+            Platform.runLater(() -> {
+                int minutes = remainingSeconds / 60;
+                int seconds = remainingSeconds % 60;
+                ui.timerLabel.setText(String.format("%02d:%02d", minutes, seconds));
+            });
             if (remainingSeconds <= 0) endGame();
+
         }, 1, 1, TimeUnit.SECONDS);
 
         // HARD: fade words at a fixed interval (both player AND computer)
@@ -892,19 +897,73 @@ public class GameController {
         });
     }
 
-    private void returnToHomeFromPause() {
+    void returnToHomeFromPause() {
         if (backgroundPool != null) backgroundPool.shutdownNow();
         if (hardFadeFuture != null) { hardFadeFuture.cancel(false); hardFadeFuture = null; }
+
         running = false;
         paused = false;
 
-        // stop network loop if any
-        try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
+        // ✅ SEND INTENT FIRST
+        try {
+            if (networkOpponent != null) {
+                networkOpponent.sendDisconnect();
+            }
+        } catch (Exception ignored) {}
+
+        // ✅ THEN CLOSE SOCKETS
+        try {
+            if (networkOpponent != null) {
+                networkOpponent.stop();
+                networkOpponent = null;
+            }
+        } catch (Exception ignored) {}
+
+        multiplayer = false;
+        isHost = false;
 
         Platform.runLater(() -> {
             hidePauseOverlay();
             if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
             if (onReturnToMenu != null) onReturnToMenu.run();
+        });
+    }
+
+    /**
+     * Called when the opponent disconnects unexpectedly.
+     * Treats the multiplayer match as finished and returns to menu.
+     */
+    public void onOpponentDisconnected() {
+        if (!multiplayer) return;
+
+        Platform.runLater(() -> {
+            try {
+                String message = isHost
+                        ? "Opponent disconnected."
+                        : "Host ended the game.";
+
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                alert.setTitle("Multiplayer Ended");
+                alert.setHeaderText(null);
+                alert.setContentText(message);
+
+                if (ui != null && ui.rootPane != null && ui.rootPane.getScene() != null) {
+                    alert.initOwner(ui.rootPane.getScene().getWindow());
+                }
+
+                try {
+                    var css = getClass().getResource("/typeshi/styles.css");
+                    if (css != null) {
+                        alert.getDialogPane().getStylesheets().add(css.toExternalForm());
+                    }
+                } catch (Exception ignored) {}
+
+                alert.showAndWait();
+
+                // cleanup AFTER user sees message
+                returnToHomeFromPause();
+
+            } catch (Exception ignored) {}
         });
     }
 

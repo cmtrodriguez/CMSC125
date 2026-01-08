@@ -31,10 +31,16 @@ public class NetworkOpponent implements Runnable {
         send("FINISHED");
     }
 
+    public void sendDisconnect() {
+        send("DISCONNECT");
+    }
+
     private void send(String msg) {
         if (!running) return;
-        if (isHost) server.send(msg);
-        else client.send(msg);
+        try {
+            if (isHost && server != null) server.send(msg);
+            else if (client != null) client.send(msg);
+        } catch (Exception ignored) {}
     }
 
     private String receive() throws Exception {
@@ -49,27 +55,41 @@ public class NetworkOpponent implements Runnable {
             String msg;
             while (running && (msg = receive()) != null) {
 
-                // DEBUG (optional)
-                // System.out.println((isHost ? "HOST" : "CLIENT") + " recv: " + msg);
-
                 if (msg.startsWith("PROGRESS:")) {
                     String[] p = msg.split(":");
                     int position = Integer.parseInt(p[1]);
                     int errors = Integer.parseInt(p[2]);
 
-                    Platform.runLater(() -> controller.updateComputerProgress(position, errors));
+                    Platform.runLater(() ->
+                            controller.updateComputerProgress(position, errors)
+                    );
 
                 } else if (msg.equals("FINISHED")) {
                     Platform.runLater(controller::onComputerFinished);
+
+                } else if (msg.equals("DISCONNECT")) {
+                    // 🔴 INTENTIONAL LEAVE
+                    running = false;
+                    Platform.runLater(controller::onOpponentDisconnected);
+                    return;
                 }
             }
+
+            // 🔴 SOCKET CLOSED WITHOUT MESSAGE (crash / alt+F4)
+            if (running) {
+                running = false;
+                Platform.runLater(controller::onOpponentDisconnected);
+            }
+
         } catch (Exception e) {
             if (running) {
-                // normal when one side quits
-                System.out.println("Network disconnected: " + e.getMessage());
+                running = false;
+                Platform.runLater(controller::onOpponentDisconnected);
             }
         }
     }
+
+    /* ---------- STOP ---------- */
 
     public void stop() {
         running = false;
