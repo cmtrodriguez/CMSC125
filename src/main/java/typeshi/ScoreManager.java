@@ -1,7 +1,8 @@
 package typeshi;
 
 
-public class ScoreManager {
+public class
+ScoreManager {
     private double playerProgress = 0;
     private double computerProgress = 0;
     private int playerErrors = 0;

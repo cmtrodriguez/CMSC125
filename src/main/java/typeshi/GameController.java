@@ -451,7 +451,7 @@ public class GameController {
             }
         }
 
-        // Player finished their passage (use capped input for reliable detection)
+        // Inside onPlayerType() ...
         if (typed.equals(playerPassage)) {
             playerFinishedCount++;
 
@@ -461,15 +461,18 @@ public class GameController {
                     )
             );
 
-            // MULTIPLAYER: finishing ends the round (race style)
             if (multiplayer) {
                 if (networkOpponent != null) networkOpponent.sendFinished();
-                endGame();
+
+                adjustingInput = true;
+                Platform.runLater(() -> {
+                    startPlayerPassage();
+                    adjustingInput = false;
+                });
                 return;
             }
 
-            // SINGLEPLAYER: defer passage transition to avoid TextField conflicts
-            // Set flag to prevent recursive onPlayerType calls during transition
+            // Singleplayer logic (already handles looping)
             adjustingInput = true;
             Platform.runLater(() -> {
                 startPlayerPassage();
@@ -631,8 +634,16 @@ public class GameController {
             if (!running || remainingSeconds <= 0) return;
 
             if (multiplayer) {
+
+                computerFinishedCount++;
+
                 ui.logBox.getChildren().add(new Label("Opponent finished the passage."));
-                endGame();
+                startComputerPassage();
+
+                // Reset opponent progress tracking
+                lastOpponentPosition = 0;
+                lastOpponentErrors = 0;
+
                 return;
             }
 
