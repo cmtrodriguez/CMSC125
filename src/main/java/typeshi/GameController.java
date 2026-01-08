@@ -54,12 +54,13 @@ public class GameController {
     private Stage pauseStage = null; // modal stage for pause dialog
     private int initialDurationSeconds = 0; // preserve initial duration for restart
 
-    // ===== MULTIPLAYER =====
+    //Multiplayer declaration
     private boolean multiplayer = false;
     private boolean isHost = false;
     private NetworkOpponent networkOpponent;
     private MultiplayerServer mpServer;
     private MultiplayerClient mpClient;
+    private boolean multiplayerActive = false;
 
     private int playerCumulativeErrors = 0;
     private int lastOpponentPosition = 0;
@@ -80,10 +81,10 @@ public class GameController {
     // For HARD fading (player side)
     private int fadeIndex = 0;
 
-    // NEW: separate fade index for computer side
+    // separate fade index for computer side
     private int computerFadeIndex = 0;
 
-    // NEW: handle the scheduled HARD fade task so we can cancel/reschedule it
+    // handle the scheduled HARD fade task so we can cancel/reschedule it
     private ScheduledFuture<?> hardFadeFuture = null;
 
     // Guard flag so programmatic text changes do not recurse badly
@@ -131,7 +132,7 @@ public class GameController {
         }
     }
 
-    // Call this from outside before startGame: 1=Easy, 2=Medium, 3=Hard
+    // calls before startGame: 1=Easy, 2=Medium, 3=Hard
     public void setMode(int mode) {
         this.mode = mode;
     }
@@ -203,8 +204,7 @@ public class GameController {
             ui.pauseButton.setDisable(false);
             ui.pauseButton.setVisible(true);
             ui.pauseButton.setOnAction(e -> togglePause());
-
-            // Attempt to insert round label and back button into the same HBox as pauseButton
+            // copies the text message in order to have a dialog box
             Node parent = ui.pauseButton.getParent();
             if (parent instanceof HBox) {
                 HBox topBox = (HBox) parent;
@@ -216,13 +216,11 @@ public class GameController {
                 if (!topBox.getChildren().contains(roundLabelNode)) {
                     topBox.getChildren().add(topBox.getChildren().indexOf(ui.pauseButton), roundLabelNode);
                 }
-
-                // (removed side "back" button - handled via pause modal controls)
             }
         }
     }
 
-    // Generate or reuse passage at given index in shared sequence
+    // generate or reussage passage
     private String getOrCreatePassageAt(int index) {
         while (index >= passageSequence.size()) {
             passageSequence.add(wordGenerator.getRandomPassage());
@@ -230,8 +228,7 @@ public class GameController {
         return passageSequence.get(index);
     }
 
-    // -------------------- GAME START WITH COUNTDOWN --------------------
-    // Call this from Main instead of startGame(...)
+    //Game that has coundown
     public void startGameWithCountdown(int durationSeconds, int difficulty) {
         // remember duration
         this.initialDurationSeconds = durationSeconds;
@@ -240,15 +237,11 @@ public class GameController {
         if (roundLabelNode != null) {
             Platform.runLater(() -> roundLabelNode.setText("Round " + currentRound + " / " + totalRounds));
         }
-
         countdownActive = true;
-
         // block typing
         ui.inputField.setDisable(true);
-
         // remember existing center content (player/computer HBox)
         javafx.scene.Node originalCenter = ui.rootPane.getCenter();
-
         // overlay + dim
         Rectangle dim = new Rectangle();
         Label countdownText = new Label("3");
@@ -257,7 +250,6 @@ public class GameController {
 
         StackPane overlay = new StackPane(dim, countdownText);
         overlay.setAlignment(Pos.CENTER);
-
         // stack = existing center content + overlay on top
         StackPane centerStack = new StackPane(originalCenter, overlay);
         dim.widthProperty().bind(centerStack.widthProperty());
@@ -541,6 +533,10 @@ public class GameController {
                 newErrors = 1;
                 ((Text) ui.targetTextFlow.getChildren().get(i)).setFill(Color.RED);
             }
+        }
+        if (newErrors == 1) {
+            playerCumulativeErrors++;
+            scoreManager.setPlayerErrors(playerCumulativeErrors);
         }
 
         if (newErrors == 1) {
@@ -860,27 +856,28 @@ public class GameController {
 
     private void togglePause() {
 
-        // ❌ DO NOT block resume just because countdown is inactive
-        if (!running) return;
+        // 🟡 LOBBY STATE (host waiting for client)
+        if (multiplayer && !multiplayerActive) {
+            if (paused) applyResume();
+            else applyPause();
+            return;
+        }
 
-        // Host-only authority
-        if (multiplayer && !isHost) return;
+        // 🔴 IN-GAME STATE (match started)
+        if (multiplayer && multiplayerActive && !isHost) return;
 
         if (paused) {
             applyResume();
-
-            if (multiplayer && networkOpponent != null) {
-                networkOpponent.sendResume();   // 🔥 THIS NOW ALWAYS FIRES
+            if (networkOpponent != null) {
+                networkOpponent.sendResume();
             }
         } else {
             applyPause();
-
-            if (multiplayer && networkOpponent != null) {
+            if (networkOpponent != null) {
                 networkOpponent.sendPause();
             }
         }
     }
-
 
     private void applyPause() {
         paused = true;
@@ -950,74 +947,59 @@ public class GameController {
     }
 
     void returnToHomeFromPause() {
+
+        // stop timers
         if (backgroundPool != null) backgroundPool.shutdownNow();
-        if (hardFadeFuture != null) { hardFadeFuture.cancel(false); hardFadeFuture = null; }
+        if (hardFadeFuture != null) hardFadeFuture.cancel(false);
 
         running = false;
         paused = false;
 
-        // ✅ SEND INTENT FIRST
-        try {
-            if (networkOpponent != null) {
-                networkOpponent.sendDisconnect();
-            }
-        } catch (Exception ignored) {}
+        // 🔥 only notify opponent if match actually started
+        if (multiplayer && multiplayerActive && networkOpponent != null) {
+            networkOpponent.sendDisconnect();
+        }
 
-        // ✅ THEN CLOSE SOCKETS
-        try {
-            if (networkOpponent != null) {
-                networkOpponent.stop();
-                networkOpponent = null;
-            }
-        } catch (Exception ignored) {}
+        // close network
+        if (networkOpponent != null) {
+            networkOpponent.stop();
+            networkOpponent = null;
+        }
 
         multiplayer = false;
+        multiplayerActive = false;
         isHost = false;
 
         Platform.runLater(() -> {
             hidePauseOverlay();
-            if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
+            if (ui != null && ui.pauseButton != null) {
+                ui.pauseButton.setDisable(true);
+            }
             if (onReturnToMenu != null) onReturnToMenu.run();
         });
     }
 
-    /**
-     * Called when the opponent disconnects unexpectedly.
-     * Treats the multiplayer match as finished and returns to menu.
-     */
     public void onOpponentDisconnected() {
         if (!multiplayer) return;
 
         Platform.runLater(() -> {
-            try {
-                String message = isHost
-                        ? "Opponent disconnected."
-                        : "Host ended the game.";
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle("Multiplayer Ended");
+            alert.setHeaderText(null);
+            alert.setContentText(
+                    isHost ? "Client left the game." : "Host ended the game."
+            );
 
-                Alert alert = new Alert(Alert.AlertType.INFORMATION);
-                alert.setTitle("Multiplayer Ended");
-                alert.setHeaderText(null);
-                alert.setContentText(message);
+            if (ui != null && ui.rootPane.getScene() != null) {
+                alert.initOwner(ui.rootPane.getScene().getWindow());
+            }
 
-                if (ui != null && ui.rootPane != null && ui.rootPane.getScene() != null) {
-                    alert.initOwner(ui.rootPane.getScene().getWindow());
-                }
+            alert.showAndWait();
 
-                try {
-                    var css = getClass().getResource("/typeshi/styles.css");
-                    if (css != null) {
-                        alert.getDialogPane().getStylesheets().add(css.toExternalForm());
-                    }
-                } catch (Exception ignored) {}
-
-                alert.showAndWait();
-
-                // cleanup AFTER user sees message
-                returnToHomeFromPause();
-
-            } catch (Exception ignored) {}
+            returnToHomeFromPause();
         });
     }
+
 
     private void showPauseOverlay() {
         if (ui == null || ui.rootPane == null || ui.rootPane.getScene() == null) return;
@@ -1345,13 +1327,33 @@ public class GameController {
 		Button confirmExit = new Button("Exit Game");
 		confirmExit.getStyleClass().addAll("button", "danger", "modal-button");
 		confirmExit.setFont(Font.font("Consolas", 16));
-		confirmExit.setOnAction(ev -> {
-			try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
-			Platform.exit();
-			System.exit(0);
-		});
+        confirmExit.setOnAction(ev -> {
 
-		confirmExit.setOnMouseEntered(ev -> confirmExit.setStyle(
+            // 🔥 INFORM OPPONENT FIRST (only if match started)
+            try {
+                if (multiplayer && multiplayerActive && networkOpponent != null) {
+                    networkOpponent.sendDisconnect();
+                }
+            } catch (Exception ignored) {}
+
+            // 🔥 CLEANUP NETWORK
+            try {
+                if (networkOpponent != null) {
+                    networkOpponent.stop();
+                    networkOpponent = null;
+                }
+            } catch (Exception ignored) {}
+
+            multiplayer = false;
+            multiplayerActive = false;
+
+            // 🔥 EXIT APP
+            Platform.exit();
+            System.exit(0);
+        });
+
+
+        confirmExit.setOnMouseEntered(ev -> confirmExit.setStyle(
 				"-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c); -fx-text-fill: white; -fx-background-radius: 10;"
 		));
 		confirmExit.setOnMouseExited(ev -> confirmExit.setStyle(
@@ -1505,6 +1507,7 @@ public class GameController {
 
                 // signal start
                 mpServer.send("START");
+                multiplayerActive = true;
 
                 Platform.runLater(() -> {
                     ui.inputField.setDisable(false);
@@ -1551,6 +1554,8 @@ public class GameController {
                 // start receiver loop
                 networkOpponent = new NetworkOpponent(this, null, mpClient, false);
                 new Thread(networkOpponent).start();
+
+                multiplayerActive = true;
 
                 Platform.runLater(() -> {
                     ui.inputField.setDisable(false);
