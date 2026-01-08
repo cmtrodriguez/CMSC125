@@ -10,6 +10,14 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.text.Font;
 import javafx.scene.text.Text;
+import javafx.scene.control.Button;
+import javafx.scene.layout.VBox;
+import javafx.geometry.Insets;
+import javafx.scene.Scene;
+import javafx.stage.Stage;
+import javafx.stage.Modality;
+import javafx.stage.StageStyle;
+import javafx.stage.Window;
 import javafx.util.Duration;
 
 import java.util.ArrayList;
@@ -29,6 +37,13 @@ public class GameController {
     private int remainingSeconds;
     private boolean running = false;
     private int currentDifficulty = 5;
+
+    private boolean paused = false; // pause state
+    private StackPane pauseOverlay; // deprecated: previously used overlay
+    private Stage pauseStage = null; // modal stage for pause dialog
+    private int initialDurationSeconds = 0; // preserve initial duration for restart
+
+
 
     // scoring
     private final ScoreManager scoreManager = new ScoreManager();
@@ -62,7 +77,10 @@ public class GameController {
     public GameController(UIComponents ui) {
         this.ui = ui;
         this.wordGenerator = new WordGenerator();
-        setupGameUI();
+        // allow tests to pass null for UI to avoid JavaFX initialization
+        if (this.ui != null) {
+            setupGameUI();
+        }
     }
 
     // Call this from outside before startGame: 1=Easy, 2=Medium, 3=Hard
@@ -72,6 +90,12 @@ public class GameController {
 
     private void setupGameUI() {
         ui.inputField.textProperty().addListener((obs, oldVal, newVal) -> onPlayerType());
+
+        // Prevent Enter key from activating unrelated default buttons: consume the TextField action
+        ui.inputField.setOnAction(e -> {
+            e.consume();
+            onPlayerType();
+        });
 
         // reset shared sequence for this round
         passageSequence.clear();
@@ -107,6 +131,15 @@ public class GameController {
         ui.playerProgress.setProgress(0);
         ui.computerProgress.setProgress(0);
         lastCorrectCount = 0;
+
+        // prepare pause control
+        if (ui.pauseButton != null) {
+            ui.pauseButton.setDisable(false);
+            ui.pauseButton.setVisible(true);
+            ui.pauseButton.setOnAction(e -> togglePause());
+
+
+        }
     }
 
     // Generate or reuse passage at given index in shared sequence
@@ -120,6 +153,9 @@ public class GameController {
     // -------------------- GAME START WITH COUNTDOWN --------------------
     // Call this from Main instead of startGame(...)
     public void startGameWithCountdown(int durationSeconds, int difficulty) {
+        // remember duration so we can restart later
+        this.initialDurationSeconds = durationSeconds;
+
         // block typing during countdown
         ui.inputField.setDisable(true);
 
@@ -161,6 +197,12 @@ public class GameController {
     }
 
     // -------------------- START GAME (ACTUAL TIMER + AI) --------------------
+    private Runnable onReturnToMenu = null;
+
+    public void setOnReturnToMenu(Runnable onReturnToMenu) {
+        this.onReturnToMenu = onReturnToMenu;
+    }
+
     public void startGame(int durationSeconds, int difficulty) {
         if (running) return;
         running = true;
@@ -180,10 +222,14 @@ public class GameController {
         backgroundPool = Executors.newScheduledThreadPool(3);
 
         computer = new ComputerOpponent(computerPassage, this, currentDifficulty);
-        backgroundPool.scheduleAtFixedRate(computer, 0, 100, TimeUnit.MILLISECONDS);
-
-        // Countdown timer
+        // schedule a wrapper so we can pause the AI without cancelling the executor
         backgroundPool.scheduleAtFixedRate(() -> {
+            if (!paused && computer != null) computer.run();
+        }, 0, 100, TimeUnit.MILLISECONDS);
+
+        // Countdown timer (pause-aware)
+        backgroundPool.scheduleAtFixedRate(() -> {
+            if (paused) return;
             remainingSeconds--;
             Platform.runLater(() ->
                     ui.timerLabel.setText(String.format("00:%02d", remainingSeconds)));
@@ -194,7 +240,7 @@ public class GameController {
         if (mode == 3) {
             fadeIndex = 0;
             backgroundPool.scheduleAtFixedRate(
-                    () -> Platform.runLater(this::fadeNextWord),
+                    () -> { if (!paused) Platform.runLater(this::fadeNextWord); },
                     3, 3, TimeUnit.SECONDS
             );
         }
@@ -285,19 +331,9 @@ public class GameController {
         // show the formatted summary: "Score: X | Errors: Y"
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
 
-        // MEDIUM and HARD: after each correctly completed word, remove last letter
-        if ((mode == 2 || mode == 3) && justFinishedWord(typed, playerPassage) && !typed.isEmpty()) {
-            String shortened = typed.substring(0, typed.length() - 1);
-
-            adjustingInput = true;
-            Platform.runLater(() -> {
-                ui.inputField.setText(shortened);
-                ui.inputField.positionCaret(shortened.length());
-                adjustingInput = false;
-            });
-
-            return;
-        }
+        // NOTE: previous behavior removed trailing spaces after words in MEDIUM mode.
+        // That prevented users from typing normal spaces; remove that behavior so spaces work normally.
+        // (No auto-trim.)
 
         // Player finished their passage
         if (typed.equals(playerPassage)) {
@@ -358,21 +394,40 @@ public class GameController {
 
     // -------------------- COMPUTER UPDATES --------------------
     public void updateComputerProgress(int position, int errors) {
+        // Backwards compatible: treat last typed char as correct
+        updateComputerTyping(position, errors, true);
+    }
+
+    /**
+     * Update the UI to reflect a new typing event from the computer opponent.
+     * lastWasCorrect indicates whether the most recently typed character was correct.
+     */
+    public void updateComputerTyping(int position, int errors, boolean lastWasCorrect) {
+        if (ui == null) return; // allow headless tests to run without JavaFX
         Platform.runLater(() -> {
-            double progress = (double) position / ui.computerTextFlow.getChildren().size();
+            int total = ui.computerTextFlow.getChildren().size();
+            double progress = total == 0 ? 0.0 : (double) position / total;
             ui.computerProgress.setProgress(progress);
 
             scoreManager.setComputerProgress(progress);
             scoreManager.setComputerErrors(errors);
-            scoreManager.awardComputer(1);
+            if (lastWasCorrect) scoreManager.awardComputer(1);
 
             ui.computerScoreLabel.setText(scoreManager.computerSummary());
 
-            // Update computer text coloring
-            for (int i = 0; i < ui.computerTextFlow.getChildren().size(); i++) {
+            // Update computer text coloring & caret (underline next char)
+            for (int i = 0; i < total; i++) {
                 Text t = (Text) ui.computerTextFlow.getChildren().get(i);
-                if (i < position) t.setFill(Color.LIMEGREEN);
-                else t.setFill(Color.GRAY);
+                // underline the next character (acts as a caret); no underline if finished
+                t.setUnderline(i == position);
+
+                if (i < position - 1) {
+                    t.setFill(Color.LIMEGREEN);
+                } else if (i == position - 1) {
+                    t.setFill(lastWasCorrect ? Color.LIMEGREEN : Color.RED);
+                } else {
+                    t.setFill(Color.GRAY);
+                }
             }
         });
     }
@@ -396,8 +451,220 @@ public class GameController {
             // Restart AI with new passage
             if (computer != null) computer.stop();
             computer = new ComputerOpponent(computerPassage, this, currentDifficulty);
-            backgroundPool.scheduleAtFixedRate(computer, 0, 100, TimeUnit.MILLISECONDS);
+            backgroundPool.scheduleAtFixedRate(() -> { if (!paused && computer != null) computer.run(); }, 0, 100, TimeUnit.MILLISECONDS);
         });
+    }
+
+    // -------------------- PAUSE / RESUME / RESTART --------------------
+    private void togglePause() {
+        if (!running) return;
+        if (paused) resumeGame(); else pauseGame();
+    }
+
+    private void pauseGame() {
+        paused = true;
+        // update pause button label to show resume affordance
+        if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("▶ Resume");
+        // show overlay with controls
+        Platform.runLater(this::showPauseOverlay);
+        // disable player input while paused
+        if (ui != null) ui.inputField.setDisable(true);
+    }
+
+    private void resumeGame() {
+        paused = false;
+        // restore pause button label
+        if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("⏸ Pause");
+        Platform.runLater(this::hidePauseOverlay);
+        if (ui != null) ui.inputField.setDisable(false);
+    }
+
+    private void restartRound() {
+        // Stop current background tasks and prepare for a fresh round
+        if (backgroundPool != null) {
+            backgroundPool.shutdownNow();
+            backgroundPool = null;
+        }
+        running = false;
+        paused = false;
+
+        // Update UI and immediately start the countdown for a new round
+        Platform.runLater(() -> {
+            // Close any pause modal/stage and disable pause button until the new round starts
+            hidePauseOverlay();
+            if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
+
+            // Reset UI for a fresh round (clears passages and progress)
+            setupGameUI();
+
+            // Start the countdown which will start the new round when complete
+            startGameWithCountdown(initialDurationSeconds, currentDifficulty);
+        });
+    }
+
+    private void returnToHomeFromPause() {
+        if (backgroundPool != null) backgroundPool.shutdownNow();
+        running = false;
+        paused = false;
+        Platform.runLater(() -> {
+            hidePauseOverlay();
+            if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
+
+            if (onReturnToMenu != null) onReturnToMenu.run();
+        });
+    }
+
+    private void showPauseOverlay() {
+        // Use a modal stage to ensure the dialog is centered over the app window
+        if (ui == null || ui.rootPane == null || ui.rootPane.getScene() == null) return;
+
+        // Close any previous modal
+        if (pauseStage != null) {
+            try { pauseStage.close(); } catch (Exception ignored) {}
+            pauseStage = null;
+        }
+
+        Window owner = ui.rootPane.getScene().getWindow();
+        Stage modal = new Stage();
+        modal.initOwner(owner);
+        modal.initModality(Modality.WINDOW_MODAL);
+        modal.initStyle(StageStyle.TRANSPARENT);
+
+        StackPane modalRoot = new StackPane();
+        modalRoot.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+        modalRoot.setPrefSize(owner.getWidth(), owner.getHeight());
+
+        VBox menu = new VBox(12);
+        menu.setMaxWidth(320);
+        menu.setPrefWidth(320);
+        menu.setAlignment(javafx.geometry.Pos.CENTER);
+        // minimal/transparent background so only buttons appear over the dim backdrop
+        menu.setStyle("-fx-background-color: transparent; -fx-padding: 8;");
+
+        Button resume = new Button("Resume");
+        resume.setDefaultButton(false);
+        resume.getStyleClass().addAll("button", "primary", "modal-button");
+        resume.setMaxWidth(Double.MAX_VALUE);
+        resume.setPrefHeight(36);
+        resume.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        resume.setOnAction(e -> {
+            modal.close();
+            resumeGame();
+        });
+        resume.setOnMouseEntered(e -> resume.setStyle("-fx-background-color: linear-gradient(to right, #96c93d, #00b09b); -fx-text-fill: white; -fx-background-radius: 10;"));
+        resume.setOnMouseExited(e -> resume.setStyle("-fx-background-color: linear-gradient(to right, #00b09b, #96c93d); -fx-text-fill: white; -fx-background-radius: 10;"));
+
+        Button restart = new Button("Start Again");
+        restart.setDefaultButton(false);
+        restart.getStyleClass().addAll("button", "primary", "modal-button");
+        restart.setMaxWidth(Double.MAX_VALUE);
+        restart.setPrefHeight(36);
+        restart.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        restart.setOnAction(e -> {
+            modal.close();
+            restartRound();
+        });
+        restart.setOnMouseEntered(e -> restart.setStyle("-fx-background-color: linear-gradient(to right, #96c93d, #00b09b); -fx-text-fill: white; -fx-background-radius: 10;"));
+        restart.setOnMouseExited(e -> restart.setStyle("-fx-background-color: linear-gradient(to right, #00b09b, #96c93d); -fx-text-fill: white; -fx-background-radius: 10;"));
+
+        Button home = new Button("Back to Menu");
+        home.setDefaultButton(false);
+        home.getStyleClass().addAll("button", "primary", "modal-button");
+        home.setMaxWidth(Double.MAX_VALUE);
+        home.setPrefHeight(36);
+        home.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        home.setOnAction(e -> {
+            modal.close();
+            returnToHomeFromPause();
+        });
+        home.setOnMouseEntered(e -> home.setStyle("-fx-background-color: linear-gradient(to right, #96c93d, #00b09b); -fx-text-fill: white; -fx-background-radius: 10;"));
+        home.setOnMouseExited(e -> home.setStyle("-fx-background-color: linear-gradient(to right, #00b09b, #96c93d); -fx-text-fill: white; -fx-background-radius: 10;"));
+
+        Button exit = new Button("Exit Game");
+        exit.setDefaultButton(false);
+        exit.getStyleClass().addAll("button", "danger", "modal-button");
+        exit.setMaxWidth(Double.MAX_VALUE);
+        exit.setPrefHeight(36);
+        exit.setFont(javafx.scene.text.Font.font("Consolas", 22));
+        exit.setOnAction(e -> System.exit(0));
+        exit.setOnMouseEntered(e -> exit.setStyle("-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c); -fx-text-fill: white; -fx-background-radius: 10;"));
+        exit.setOnMouseExited(e -> exit.setStyle("-fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b); -fx-text-fill: white; -fx-background-radius: 10;"));
+
+        menu.getChildren().addAll(resume, restart, home, exit);
+        modalRoot.getChildren().add(menu);
+        StackPane.setAlignment(menu, javafx.geometry.Pos.CENTER);
+
+        // Consume Enter events on the modal so pressing Enter doesn't activate other buttons on owner
+        modalRoot.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ENTER) e.consume();
+        });
+
+        Scene modalScene = new Scene(modalRoot);
+        // Attach app stylesheet so modal buttons match HomeScreen styles
+        try {
+            var css = getClass().getResource("/typeshi/styles.css");
+            if (css != null) modalScene.getStylesheets().add(css.toExternalForm());
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+        modalScene.setFill(javafx.scene.paint.Color.TRANSPARENT);
+        modal.setScene(modalScene);
+
+        // keep modal centered over owner when shown/resized
+        modal.setOnShown(evt -> centerModalOverOwner(modal, owner));
+        owner.widthProperty().addListener((o, a, b) -> centerModalOverOwner(modal, owner));
+        owner.heightProperty().addListener((o, a, b) -> centerModalOverOwner(modal, owner));
+
+        pauseStage = modal;
+        modal.show();
+
+        // initial focus on the menu
+        menu.requestFocus();
+
+        // small fade-in for polish
+        javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(180), menu);
+        menu.setOpacity(0);
+        ft.setFromValue(0);
+        ft.setToValue(1);
+        ft.play();
+    }
+
+    // Helper to center modal Stage over owner window
+    private void centerModalOverOwner(Stage modal, Window owner) {
+        if (modal == null || owner == null) return;
+        // center over owner
+        double ownerX = owner.getX();
+        double ownerY = owner.getY();
+        double ownerW = owner.getWidth();
+        double ownerH = owner.getHeight();
+
+        double modalW = modal.getWidth();
+        double modalH = modal.getHeight();
+        // If modal has not computed size yet, rely on centerOnScreen fallback
+        if (modalW <= 0 || modalH <= 0) {
+            modal.centerOnScreen();
+            return;
+        }
+
+        double x = ownerX + (ownerW - modalW) / 2.0;
+        double y = ownerY + (ownerH - modalH) / 2.0;
+        modal.setX(x);
+        modal.setY(y);
+    }
+
+    private void hidePauseOverlay() {
+        // Close modal stage if present, otherwise remove the in-root overlay (legacy)
+        try {
+            if (pauseStage != null) {
+                pauseStage.close();
+                pauseStage = null;
+                return;
+            }
+        } catch (Exception ignored) {}
+
+        if (ui == null || ui.rootPane == null || pauseOverlay == null) return;
+        ui.rootPane.getChildren().remove(pauseOverlay);
+        pauseOverlay = null;
     }
 
     // -------------------- END GAME --------------------

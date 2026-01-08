@@ -23,6 +23,14 @@ public class Main extends Application {
 
         // Create the scene once here
         scene = new Scene(loading.getRoot(), 800, 500);
+        // Attach stylesheet for improved visuals
+        try {
+            var css = getClass().getResource("/typeshi/styles.css");
+            if (css != null) scene.getStylesheets().add(css.toExternalForm());
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+
         primaryStage.setScene(scene);
         primaryStage.setTitle("TypeShi");
         primaryStage.show();
@@ -38,6 +46,18 @@ public class Main extends Application {
         HomeScreen home = new HomeScreen();
 
         home.getPlayButton().setOnAction(e -> showDifficultyScreen());
+
+        // Settings button: open settings screen and pass a callback to return home
+        home.getSettingsButton().setOnAction(e -> {
+            SettingsScreen s = new SettingsScreen(() -> showHomeScreen());
+            scene.setRoot(s.getRoot());
+        });
+
+        // Instructions button: show concise instructions and allow returning home
+        home.getInstructionsButton().setOnAction(e -> {
+            InstructionsScreen instr = new InstructionsScreen(() -> showHomeScreen());
+            scene.setRoot(instr.getRoot());
+        });
 
         scene.setRoot(home.getRoot());   // no new Scene, fullscreen preserved
     }
@@ -67,6 +87,9 @@ public class Main extends Application {
         GameController controller = new GameController(ui);
         controller.setMode(mode);           // 1=Easy, 2=Medium, 3=Hard
         ui.setController(controller);
+
+        // Allow returning from the Victory screen to the Home screen
+        controller.setOnReturnToMenu(() -> showHomeScreen());
 
         scene.setRoot(ui.rootPane);        // keep same Scene, size, fullscreen
 

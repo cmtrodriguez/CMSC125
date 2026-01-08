@@ -27,6 +27,8 @@ public class UIComponents {
     public Label timerLabel;
     public VBox logBox;
 
+    public Button pauseButton; // pause control shown during rounds
+
     private GameController controller;
 
     public UIComponents() {
@@ -54,7 +56,23 @@ public class UIComponents {
         timerLabel.setFont(Font.font("Consolas", 24));
         timerLabel.setTextFill(Color.WHITE);
 
-        topBar.getChildren().addAll(title, timerLabel);
+        // Pause button (hidden/disabled until a round starts)
+        javafx.scene.control.Button pauseButton = new javafx.scene.control.Button("⏸ Pause");
+        pauseButton.setFont(Font.font("Consolas", 14));
+        pauseButton.setStyle("-fx-background-radius: 8; -fx-padding: 6 12 6 12; -fx-background-color: linear-gradient(to right, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); -fx-text-fill: white; -fx-border-color: rgba(255,255,255,0.08); -fx-border-radius: 8;");
+        pauseButton.setDisable(true);
+        pauseButton.setVisible(true);
+        pauseButton.setTooltip(new javafx.scene.control.Tooltip("Pause the round"));
+        pauseButton.setDefaultButton(false);
+        pauseButton.setOnMouseEntered(e -> pauseButton.setStyle("-fx-background-radius: 8; -fx-padding: 6 12 6 12; -fx-background-color: linear-gradient(to right, rgba(255,255,255,0.12), rgba(255,255,255,0.03)); -fx-text-fill: white; -fx-border-color: rgba(255,255,255,0.12); -fx-border-radius: 8;"));
+        pauseButton.setOnMouseExited(e -> pauseButton.setStyle("-fx-background-radius: 8; -fx-padding: 6 12 6 12; -fx-background-color: linear-gradient(to right, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); -fx-text-fill: white; -fx-border-color: rgba(255,255,255,0.08); -fx-border-radius: 8;"));
+        this.pauseButton = pauseButton;
+
+        // layout: title, spacer, timer, pause button (right aligned)
+        topBar.getChildren().addAll(title);
+        javafx.scene.layout.Region spacer = new javafx.scene.layout.Region();
+        javafx.scene.layout.HBox.setHgrow(spacer, javafx.scene.layout.Priority.ALWAYS);
+        topBar.getChildren().addAll(spacer, timerLabel, pauseButton);
         rootPane.setTop(topBar);
     }
 

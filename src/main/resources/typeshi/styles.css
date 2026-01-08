@@ -59,3 +59,84 @@
     -fx-font-family: "Consolas";
     -fx-text-fill: white;
 }
+
+/* General panel/card */
+.card {
+    -fx-background-color: rgba(20,20,30,0.9);
+    -fx-background-radius: 12;
+    -fx-padding: 14;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.7), 12, 0.5, 0, 6);
+    -fx-border-color: rgba(255,255,255,0.03);
+    -fx-border-width: 1;
+}
+
+.panel-title {
+    -fx-font-family: "Consolas";
+    -fx-font-size: 28px;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.6), 4, 0.5, 0, 2);
+}
+
+.subtle {
+    -fx-text-fill: #dcdcdc;
+    -fx-font-family: "Consolas";
+}
+
+.button.primary {
+    -fx-background-color: linear-gradient(to right, #00b09b, #96c93d);
+}
+
+.button.danger {
+    -fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b);
+}
+
+.victory-overlay {
+    -fx-background-color: transparent;
+}
+
+.victory-winner {
+    -fx-font-family: "Consolas";
+    -fx-font-size: 44px;
+    -fx-text-fill: linear-gradient(to bottom, #ffe47a, #ffd400);
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.75), 10, 0.5, 0, 4);
+    -fx-font-weight: bold;
+}
+
+.stats {
+    -fx-font-family: "Consolas";
+    -fx-font-size: 16px;
+    -fx-text-fill: white;
+}
+
+.muted {
+    -fx-text-fill: #bdbdbd;
+}
+
+/* modal buttons — stand out over a dim backdrop without a solid modal card */
+.modal-button {
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.48), 10, 0.5, 0, 4);
+    -fx-background-color: transparent;
+    -fx-background-radius: 10;
+    -fx-padding: 10 18 10 18;
+    -fx-font-size: 20px;
+    -fx-font-family: "Consolas";
+    -fx-text-fill: white;
+    -fx-transition: background-color 120ms ease;
+}
+
+/* Settings screen refinements */
+.settings-subtitle {
+    -fx-text-fill: #dcdcdc;
+    -fx-font-size: 14px;
+}
+
+.settings-footer {
+    -fx-padding: 10 0 0 0;
+}
+
+.reset-link {
+    -fx-text-fill: #bdbdbd;
+    -fx-underline: true;
+}
+
