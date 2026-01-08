@@ -40,6 +40,8 @@ public class GameController {
     private final UIComponents ui;
     private final WordGenerator wordGenerator;
 
+    private boolean pauseLockedByNetwork = false;
+
     private ComputerOpponent computer;
     private ScheduledExecutorService backgroundPool;
 
@@ -856,29 +858,71 @@ public class GameController {
         });
     }
 
-    // -------------------- PAUSE / RESUME / RESTART --------------------
     private void togglePause() {
-        if (!running && !countdownActive && !multiplayer) return;
-        if (paused) resumeGame();
-        else pauseGame();
+
+        // ❌ DO NOT block resume just because countdown is inactive
+        if (!running) return;
+
+        // Host-only authority
+        if (multiplayer && !isHost) return;
+
+        if (paused) {
+            applyResume();
+
+            if (multiplayer && networkOpponent != null) {
+                networkOpponent.sendResume();   // 🔥 THIS NOW ALWAYS FIRES
+            }
+        } else {
+            applyPause();
+
+            if (multiplayer && networkOpponent != null) {
+                networkOpponent.sendPause();
+            }
+        }
     }
 
-    private void pauseGame() {
+
+    private void applyPause() {
         paused = true;
-        if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("▶ Resume");
-        Platform.runLater(this::showPauseOverlay);
+
+        if (ui != null && ui.pauseButton != null) {
+            ui.pauseButton.setText("▶ Resume");
+        }
+
         if (ui != null) ui.inputField.setDisable(true);
-        // Pause countdown (if active)
-        if (countdownActive && countdownTimeline != null) countdownTimeline.pause();
+        Platform.runLater(this::showPauseOverlay);
+
+        if (countdownActive && countdownTimeline != null) {
+            countdownTimeline.pause();
+        }
     }
 
-    private void resumeGame() {
+
+    private void applyResume() {
         paused = false;
-        if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("⏸ Pause");
-        Platform.runLater(this::hidePauseOverlay);
+
+        if (ui != null && ui.pauseButton != null) {
+            ui.pauseButton.setText("⏸ Pause");
+        }
+
         if (ui != null) ui.inputField.setDisable(false);
-        // Resume countdown (if active)
-        if (countdownActive && countdownTimeline != null) countdownTimeline.play();
+        Platform.runLater(this::hidePauseOverlay);
+
+        if (countdownActive && countdownTimeline != null) {
+            countdownTimeline.play();
+        }
+    }
+
+
+
+    public void pauseFromNetwork() {
+        if (!running || paused) return;
+        applyPause();
+    }
+
+    public void resumeFromNetwork() {
+        if (!running || !paused) return;
+        applyResume();
     }
 
     private void restartRound() {
@@ -1007,7 +1051,7 @@ public class GameController {
         resume.setFont(Font.font("Consolas", 22));
         resume.setOnAction(e -> {
             modal.close();
-            resumeGame();
+            togglePause();
         });
         resume.setOnMouseEntered(e -> resume.setStyle(
                 "-fx-background-color: linear-gradient(to right, #96c93d, #00b09b);"
@@ -1232,6 +1276,9 @@ public class GameController {
 
     // Ensure multiplayer lobby shows the back button in case parent HBox isn't found
     public void prepareMultiplayerLobbyUI(String statusText) {
+        if (multiplayer && !isHost && ui.pauseButton != null) {
+            ui.pauseButton.setDisable(true);
+        }
         if (ui == null) return;
 
         // change labels (requires UIComponents fields; see Fix 2)

@@ -34,6 +34,14 @@ public class NetworkOpponent implements Runnable {
     public void sendDisconnect() {
         send("DISCONNECT");
     }
+    public void sendPause() {
+        send("PAUSE");
+    }
+
+    public void sendResume() {
+        send("RESUME");
+    }
+
 
     private void send(String msg) {
         if (!running) return;
@@ -48,46 +56,54 @@ public class NetworkOpponent implements Runnable {
     }
 
     /* ---------- RECEIVE LOOP ---------- */
-
     @Override
     public void run() {
         try {
-            String msg;
-            while (running && (msg = receive()) != null) {
+            while (running) {
+                String msg = receive();
+                if (msg == null) {
+                    break;
+                }
 
-                if (msg.startsWith("PROGRESS:")) {
-                    String[] p = msg.split(":");
-                    int position = Integer.parseInt(p[1]);
-                    int errors = Integer.parseInt(p[2]);
+                switch (msg) {
+                    case "PAUSE":
+                        Platform.runLater(controller::pauseFromNetwork);
+                        break;
 
-                    Platform.runLater(() ->
-                            controller.updateComputerProgress(position, errors)
-                    );
+                    case "RESUME":
+                        Platform.runLater(controller::resumeFromNetwork);
+                        break;
+                    case "DISCONNECT":
+                        Platform.runLater(controller::onOpponentDisconnected);
+                        running = false;
+                        break;
 
-                } else if (msg.equals("FINISHED")) {
-                    Platform.runLater(controller::onComputerFinished);
+                    case "FINISHED":
+                        Platform.runLater(controller::onComputerFinished);
+                        break;
 
-                } else if (msg.equals("DISCONNECT")) {
-                    // 🔴 INTENTIONAL LEAVE
-                    running = false;
-                    Platform.runLater(controller::onOpponentDisconnected);
-                    return;
+
+
+                    default:
+                        if (msg.startsWith("PROGRESS:")) {
+                            String[] p = msg.split(":");
+                            int position = Integer.parseInt(p[1]);
+                            int errors = Integer.parseInt(p[2]);
+
+                            Platform.runLater(() ->
+                                    controller.updateComputerProgress(position, errors)
+                            );
+                        }
                 }
             }
-
-            // 🔴 SOCKET CLOSED WITHOUT MESSAGE (crash / alt+F4)
-            if (running) {
-                running = false;
-                Platform.runLater(controller::onOpponentDisconnected);
-            }
-
         } catch (Exception e) {
             if (running) {
-                running = false;
                 Platform.runLater(controller::onOpponentDisconnected);
             }
         }
     }
+
+
 
     /* ---------- STOP ---------- */
 
