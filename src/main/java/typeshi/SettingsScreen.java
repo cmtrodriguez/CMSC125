@@ -12,6 +12,8 @@ import javafx.scene.layout.Priority;
 import javafx.scene.control.Separator;
 import javafx.scene.text.Font;
 
+import java.util.prefs.Preferences;
+
 /**
  * Simple settings screen for the game. Values are not yet persisted to disk.
  */
@@ -19,7 +21,7 @@ public class SettingsScreen {
 
     private final StackPane root = new StackPane();
 
-    private javafx.scene.control.ChoiceBox<String> defaultDifficultyChoice;
+    private ChoiceBox<String> defaultDifficultyChoice;
     private Button backButton;
 
     public SettingsScreen(Runnable onBack) {
@@ -38,8 +40,7 @@ public class SettingsScreen {
         title.getStyleClass().add("panel-title");
 
         Label subtitle = new Label("Adjust audio levels, toggle music and effects, and choose your default difficulty.");
-        subtitle.getStyleClass().add("subtle");
-        subtitle.getStyleClass().add("settings-subtitle");
+        subtitle.getStyleClass().addAll("subtle", "settings-subtitle");
         subtitle.setWrapText(true);
         subtitle.setMaxWidth(520);
 
@@ -49,7 +50,7 @@ public class SettingsScreen {
         content.setAlignment(Pos.CENTER_LEFT);
         content.setMaxWidth(520);
 
-        // Volume (stacked)
+        // Volume
         Label volumeLabel = new Label("Master Volume");
         volumeLabel.getStyleClass().add("subtle");
         Slider volumeSlider = new Slider(0, 100, 70);
@@ -60,33 +61,35 @@ public class SettingsScreen {
         HBox.setHgrow(volumeSlider, Priority.ALWAYS);
         Label volVal = new Label(String.valueOf((int) volumeSlider.getValue()));
         volVal.getStyleClass().add("subtle");
-        HBox volValRow = new HBox();
+        HBox volValRow = new HBox(volVal);
         volValRow.setAlignment(Pos.CENTER_RIGHT);
-        volValRow.getChildren().add(volVal);
         volumeSlider.valueProperty().addListener((obs, o, n) -> volVal.setText(String.valueOf(n.intValue())));
 
-        // Audio toggles (stacked)
+        // Audio toggles
         Label audioLabel = new Label("Audio");
         audioLabel.getStyleClass().add("subtle");
         VBox toggles = new VBox(8);
         toggles.setAlignment(Pos.CENTER_LEFT);
         CheckBox musicCheck = new CheckBox("Music");
-        musicCheck.setSelected(true);
         CheckBox sfxCheck = new CheckBox("Sound Effects");
-        sfxCheck.setSelected(true);
         musicCheck.getStyleClass().add("subtle");
         sfxCheck.getStyleClass().add("subtle");
         toggles.getChildren().addAll(musicCheck, sfxCheck);
 
-        // Difficulty (stacked)
+        // Difficulty
         Label diffLabel = new Label("Default Difficulty");
         diffLabel.getStyleClass().add("subtle");
-        defaultDifficultyChoice = new javafx.scene.control.ChoiceBox<>();
+        defaultDifficultyChoice = new ChoiceBox<>();
         defaultDifficultyChoice.getItems().addAll("Easy", "Medium", "Hard");
-        defaultDifficultyChoice.setValue("Medium");
         defaultDifficultyChoice.setMaxWidth(Double.MAX_VALUE);
-        // Ensure readability on light backgrounds
         defaultDifficultyChoice.setStyle("-fx-background-color: #2b2b2b; -fx-text-fill: white;");
+
+        // Load saved preferences
+        Preferences prefs = Preferences.userNodeForPackage(SettingsScreen.class);
+        volumeSlider.setValue(prefs.getInt("volume", 70));
+        musicCheck.setSelected(prefs.getBoolean("music", true));
+        sfxCheck.setSelected(prefs.getBoolean("sfx", true));
+        defaultDifficultyChoice.setValue(prefs.get("difficulty", "Medium"));
 
         // Footer buttons
         HBox footer = new HBox(10);
@@ -105,10 +108,15 @@ public class SettingsScreen {
         Button save = new Button("Save");
         save.getStyleClass().addAll("button", "primary");
         save.setOnAction(e -> {
+            prefs.putInt("volume", (int) volumeSlider.getValue());
+            prefs.putBoolean("music", musicCheck.isSelected());
+            prefs.putBoolean("sfx", sfxCheck.isSelected());
+            prefs.put("difficulty", defaultDifficultyChoice.getValue());
+            System.out.println("Settings saved!");
+            if (onBack != null) onBack.run();
         });
 
         backButton = new Button("Back");
-        backButton.setDefaultButton(false);
         backButton.getStyleClass().addAll("button", "danger");
         backButton.setOnAction(e -> {
             if (onBack != null) onBack.run();
