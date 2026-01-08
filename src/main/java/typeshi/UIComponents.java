@@ -27,13 +27,12 @@ public class UIComponents {
     public Label timerLabel;
     public VBox logBox;
 
-    // add fields
+    // Add fields
     public Label playerTitleLabel;
     public Label opponentTitleLabel;
     public Label bottomInstructionLabel;
 
-
-    public Button pauseButton; // pause control shown during rounds
+    public Button pauseButton; // Pause control shown during rounds
 
     private GameController controller;
 
@@ -74,7 +73,7 @@ public class UIComponents {
         pauseButton.setOnMouseExited(e -> pauseButton.setStyle("-fx-background-radius: 8; -fx-padding: 6 12 6 12; -fx-background-color: linear-gradient(to right, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); -fx-text-fill: white; -fx-border-color: rgba(255,255,255,0.08); -fx-border-radius: 8;"));
         this.pauseButton = pauseButton;
 
-        // layout: title, spacer, timer, pause button (right aligned)
+        // Layout: title, spacer, timer, pause button (right aligned)
         topBar.getChildren().addAll(title);
         javafx.scene.layout.Region spacer = new javafx.scene.layout.Region();
         javafx.scene.layout.HBox.setHgrow(spacer, javafx.scene.layout.Priority.ALWAYS);

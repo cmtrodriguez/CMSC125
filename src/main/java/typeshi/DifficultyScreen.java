@@ -46,13 +46,13 @@ public class DifficultyScreen {
         backButton = createButton("Back");
         backButton.getStyleClass().add("danger");
 
-        // unify button widths
+        // Unify button widths
         double btnWidth = 160;
         easyButton.setPrefWidth(btnWidth);
         mediumButton.setPrefWidth(btnWidth);
         hardButton.setPrefWidth(btnWidth);
 
-        // instruction labels
+        // Instruction labels
         Label easyInstr = new Label("Easy: immediate red feedback; no auto-backspace.");
         easyInstr.getStyleClass().add("subtle");
         easyInstr.setWrapText(true);
@@ -71,7 +71,7 @@ public class DifficultyScreen {
         hardInstr.setMaxWidth(btnWidth);
         hardInstr.setAlignment(Pos.CENTER);
 
-        // each button + its instruction in a card-like VBox
+        // Each button + its instruction in a card-like VBox
         VBox easyBox = new VBox(8, easyButton, easyInstr);
         easyBox.setAlignment(Pos.CENTER);
         easyBox.getStyleClass().addAll("difficulty-card", "easy");
@@ -91,7 +91,7 @@ public class DifficultyScreen {
         buttonsRow.setAlignment(Pos.CENTER);
         buttonsRow.getChildren().addAll(easyBox, mediumBox, hardBox);
 
-        // rounds spinner
+        // Rounds spinner
         roundsSpinner = new Spinner<>();
         roundsSpinner.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(1, 10, 1));
         roundsSpinner.setEditable(true);
@@ -110,7 +110,7 @@ public class DifficultyScreen {
         Button btn = new Button(text);
         btn.setFont(Font.font("Consolas", 24));
         btn.setDefaultButton(false);
-        // rely on CSS .button and .button.primary rules
+        // Rely on CSS .button and .button.primary rules
         btn.getStyleClass().add("primary");
         return btn;
     }

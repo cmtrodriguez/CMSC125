@@ -41,7 +41,6 @@ MultiplayerServer {
                 String line;
                 while ((line = in.readLine()) != null) {
                     System.out.println("Client: " + line);
-                    // Here you can update the game UI using Platform.runLater(...)
                 }
             } catch (IOException e) {
                 e.printStackTrace();
