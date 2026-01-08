@@ -67,6 +67,7 @@ public class GameController {
     private int lastTypedLength = 0;
     private int lastOpponentErrors = 0;
 
+
     private int multiplayerRoundSeconds = 20;
     private int multiplayerPort = 5000;
 
@@ -311,7 +312,7 @@ public class GameController {
         pause.play();
     }
 
-    // -------------------- START GAME (TIMER + AI/NETWORK) --------------------
+    // -------------------- START GAME (TIMER + COMPUTER) --------------------
     public void startGame(int durationSeconds, int difficulty) {
         if (running) return;
         running = true;
@@ -519,10 +520,10 @@ public class GameController {
         cappedLen = Math.min(typedRaw.length(), children.size());
 
         // Determine the number of newly typed letters
-        int prevTypedLen = lastCorrectCount; // track last correct prefix length        int typedLen = typed.length();
+        int prevTypedLen = lastCorrectCount; // track last correct prefix length
+        int typedLen = typed.length();
         int newErrors = 0;
 
-        // Only check new characters that were just typed
         if (typedRaw.length() > lastTypedLength) {
             int i = typedRaw.length() - 1;
 
@@ -538,9 +539,10 @@ public class GameController {
             scoreManager.setPlayerErrors(playerCumulativeErrors);
         }
 
-        // Increment cumulative errors only by the newly typed wrong letters
-        playerCumulativeErrors += newErrors;
-        scoreManager.setPlayerErrors(playerCumulativeErrors);
+        if (newErrors == 1) {
+            playerCumulativeErrors++;
+            scoreManager.setPlayerErrors(playerCumulativeErrors);
+        }
 
         scoreManager.setPlayerProgress(progress);
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
