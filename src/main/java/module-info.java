@@ -3,7 +3,6 @@ module com.example.typeshii {
     requires javafx.fxml;
     requires javafx.media;
 
-
     opens typeshi to javafx.fxml;
     exports typeshi;
 }
