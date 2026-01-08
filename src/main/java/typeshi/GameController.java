@@ -75,6 +75,9 @@ public class GameController {
     // Guard flag so programmatic text changes do not recurse badly
     private boolean adjustingInput = false;
 
+    // Track which character positions have been auto-backspaced (Medium/Hard)
+    private final java.util.Set<Integer> backspacedPositions = new java.util.HashSet<>();
+
     // current passages for each side
     private String playerPassage;
     private String computerPassage;
@@ -341,12 +344,13 @@ public class GameController {
 
         // cap for safety if user pastes extra characters
         int cappedLen = Math.min(typedRaw.length(), children.size());
+        String typed = typedRaw.substring(0, cappedLen);
 
         int correctCount = 0;
+        boolean hasNewError = false; // Track if user just made a NEW mistake (for screen shake)
 
         for (int i = 0; i < children.size(); i++) {
             Text t = (Text) children.get(i);
-
             if (i < cappedLen) {
                 char targetChar = t.getText().charAt(0);
                 if (typedRaw.charAt(i) == targetChar) {
@@ -355,8 +359,33 @@ public class GameController {
                         t.setFill(Color.LIMEGREEN);
                     }
                 } else {
-                    if (!t.getFill().equals(Color.TRANSPARENT)) {
-                        t.setFill(Color.RED);
+                    // Detect NEW error for screen shake (was white, now wrong)
+                    if (mode == 3 && t.getFill().equals(Color.WHITE)) {
+                        hasNewError = true;
+                    }
+
+                    // MEDIUM & HARD: Delayed red feedback (invisible errors)
+                    if (mode == 2 || mode == 3) {
+                        // Keep white for 0.5 seconds, then turn red
+                        if (!t.getFill().equals(Color.TRANSPARENT)) {
+                            t.setFill(Color.WHITE);
+                            final int index = i;
+                            Timeline delay = new Timeline(new KeyFrame(Duration.millis(500), e -> {
+                                if (index < children.size()) {
+                                    Text delayedText = (Text) children.get(index);
+                                    if (!delayedText.getFill().equals(Color.LIMEGREEN) &&
+                                            !delayedText.getFill().equals(Color.TRANSPARENT)) {
+                                        delayedText.setFill(Color.RED);
+                                    }
+                                }
+                            }));
+                            delay.play();
+                        }
+                    } else {
+                        // EASY: immediate red feedback
+                        if (!t.getFill().equals(Color.TRANSPARENT)) {
+                            t.setFill(Color.RED);
+                        }
                     }
                 }
             } else {
@@ -364,6 +393,11 @@ public class GameController {
                     t.setFill(Color.WHITE);
                 }
             }
+        }
+
+        // HARD: Screen shake on wrong letter
+        if (mode == 3 && hasNewError) {
+            shakeScreen();
         }
 
         double progress = children.isEmpty() ? 0.0 : (double) correctCount / children.size();
@@ -376,12 +410,9 @@ public class GameController {
         }
         lastCorrectCount = correctCount;
 
-        int errors = Math.max(0, cappedLen - correctCount);
-
-        // errors in this passage
+        int errors = Math.max(0, cappedLen - correctCount); // errors in this passage
         scoreManager.setPlayerErrors(errors);
         scoreManager.setPlayerProgress(progress);
-
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
 
         // MULTIPLAYER: send progress to remote on every change
@@ -389,29 +420,81 @@ public class GameController {
             networkOpponent.sendProgress(correctCount, errors);
         }
 
-        // Player finished their passage
-        if (typedRaw.equals(playerPassage)) {
+        // MEDIUM & HARD: Auto-backspace after completing a correct word (ONCE per position only)
+        if ((mode == 2 || mode == 3) && typedRaw.length() > 0 && typedRaw.charAt(typedRaw.length() - 1) == ' ') {
+            // Check if the word just completed was entirely correct
+            int wordStart = typedRaw.lastIndexOf(' ', typedRaw.length() - 2) + 1;
+            boolean wordCorrect = true;
+            for (int i = wordStart; i < typedRaw.length() - 1; i++) {
+                if (i >= playerPassage.length() || typedRaw.charAt(i) != playerPassage.charAt(i)) {
+                    wordCorrect = false;
+                    break;
+                }
+            }
+
+            // Only backspace if: word is correct AND this position hasn't been backspaced before
+            int backspacePosition = typedRaw.length() - 2; // The character to be removed
+            if (wordCorrect && typedRaw.length() > 1 && !backspacedPositions.contains(backspacePosition)) {
+                backspacedPositions.add(backspacePosition); // Mark this position as backspaced
+                adjustingInput = true;
+                Timeline backspaceDelay = new Timeline(new KeyFrame(Duration.millis(100), e -> {
+                    String current = ui.inputField.getText();
+                    if (current.length() > 1) {
+                        // Remove one character before the space
+                        String newText = current.substring(0, current.length() - 2) + " ";
+                        ui.inputField.setText(newText);
+                        ui.inputField.positionCaret(newText.length());
+                    }
+                    adjustingInput = false;
+                }));
+                backspaceDelay.play();
+            }
+        }
+
+        // Player finished their passage (use capped input for reliable detection)
+        if (typed.equals(playerPassage)) {
             playerFinishedCount++;
 
-            adjustingInput = true;
-            Platform.runLater(() -> ui.logBox.getChildren().add(
-                    new Label("You finished a passage! (" + playerFinishedCount + ")")
-            ));
+            Platform.runLater(() ->
+                    ui.logBox.getChildren().add(
+                            new Label("You finished a passage! (" + playerFinishedCount + ")")
+                    )
+            );
 
             // MULTIPLAYER: finishing ends the round (race style)
             if (multiplayer) {
                 if (networkOpponent != null) networkOpponent.sendFinished();
                 endGame();
-                adjustingInput = false;
                 return;
             }
 
-            // SINGLEPLAYER: only player moves to next passage in shared sequence
+            // SINGLEPLAYER: defer passage transition to avoid TextField conflicts
+            // Set flag to prevent recursive onPlayerType calls during transition
+            adjustingInput = true;
             Platform.runLater(() -> {
                 startPlayerPassage();
                 adjustingInput = false;
             });
         }
+    }
+
+
+    // HARD: Screen shake effect when player makes an error
+    private void shakeScreen() {
+        if (ui == null || ui.rootPane == null) return;
+
+        // Store original position
+        double originalX = ui.rootPane.getTranslateX();
+
+        // Create shake animation
+        Timeline shake = new Timeline(
+                new KeyFrame(Duration.millis(0), e -> ui.rootPane.setTranslateX(originalX - 5)),
+                new KeyFrame(Duration.millis(50), e -> ui.rootPane.setTranslateX(originalX + 5)),
+                new KeyFrame(Duration.millis(100), e -> ui.rootPane.setTranslateX(originalX - 3)),
+                new KeyFrame(Duration.millis(150), e -> ui.rootPane.setTranslateX(originalX + 3)),
+                new KeyFrame(Duration.millis(200), e -> ui.rootPane.setTranslateX(originalX))
+        );
+        shake.play();
     }
 
     // Helper: did the player just finish a correct word? (space-ended words only)

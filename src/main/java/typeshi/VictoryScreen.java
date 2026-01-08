@@ -27,7 +27,8 @@ public class VictoryScreen {
                          int computerScore,
                          int playerErrors,
                          int computerErrors,
-                         Runnable onBack) {
+                         Runnable onBack,
+                         boolean isMultiplayer) {
         this.onBack = onBack;
 
         // Prevent Enter from activating buttons unintentionally on the victory screen
@@ -37,11 +38,16 @@ public class VictoryScreen {
             }
         });
 
-        // ---------- BACKGROUND GIF (robust) ----------
-        // Put file at: src/main/resources/images/victory.gif
+        // Determine if player won or lost
+        boolean playerWon = playerScore > computerScore;
+
+        // ---------- BACKGROUND GIF (win or loss specific) ----------
+        // Victory: src/main/resources/images/victory.gif
+        // Defeat:  src/main/resources/images/defeat.gif
         ImageView bgView = null;
         try {
-            var url = getClass().getResource("/images/victory.gif");
+            String gifPath = playerWon ? "/images/victory.gif" : "/images/defeat.gif";
+            var url = getClass().getResource(gifPath);
             if (url != null) {
                 Image bgImage = new Image(url.toExternalForm());
                 bgView = new ImageView(bgImage);
@@ -49,7 +55,7 @@ public class VictoryScreen {
                 bgView.fitWidthProperty().bind(root.widthProperty());
                 bgView.fitHeightProperty().bind(root.heightProperty());
             } else {
-                System.err.println("Victory image not found: /images/victory.gif — using fallback background");
+                System.err.println("Background image not found: " + gifPath + " — using fallback background");
                 // fallback background style applied below if no bgView
             }
         } catch (Exception ex) {
@@ -58,11 +64,13 @@ public class VictoryScreen {
         }
 
         // ---------- TEXT / UI OVERLAY ----------
+        String opponentLabel = isMultiplayer ? "Opponent" : "Computer";
+
         String winnerText;
         if (playerScore > computerScore) {
             winnerText = "YOU WIN!";
         } else if (playerScore < computerScore) {
-            winnerText = "COMPUTER WINS!";
+            winnerText = isMultiplayer ? "OPPONENT WINS!" : "COMPUTER WINS!";
         } else {
             winnerText = "DRAW!";
         }
@@ -79,7 +87,7 @@ public class VictoryScreen {
         youStats.getStyleClass().add("stats");
 
         Label compStats = new Label(
-                String.format("Computer: %d points, %d errors", computerScore, computerErrors)
+                String.format("%s: %d points, %d errors", opponentLabel, computerScore, computerErrors)
         );
         compStats.getStyleClass().add("stats");
 
@@ -130,6 +138,7 @@ public class VictoryScreen {
             root.setStyle("-fx-background-color: linear-gradient(to bottom, #111111, #2b2b2b);");
             root.getChildren().add(centerCard);
         }
+
         StackPane.setAlignment(centerCard, Pos.CENTER);
 
         // Play audio (if available) — kept in separate try/catch within method
@@ -143,7 +152,18 @@ public class VictoryScreen {
                          int computerScore,
                          int playerErrors,
                          int computerErrors) {
-        this(playerScore, computerScore, playerErrors, computerErrors, null);
+        this(playerScore, computerScore, playerErrors, computerErrors, null, false);
+    }
+
+    /**
+     * Constructor with callback but no multiplayer flag (defaults to singleplayer).
+     */
+    public VictoryScreen(int playerScore,
+                         int computerScore,
+                         int playerErrors,
+                         int computerErrors,
+                         Runnable onBack) {
+        this(playerScore, computerScore, playerErrors, computerErrors, onBack, false);
     }
 
     private void playVictoryMusic(String winnerText) {
