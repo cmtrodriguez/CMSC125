@@ -63,6 +63,7 @@ public class GameController {
 
     private int playerCumulativeErrors = 0;
     private int lastOpponentPosition = 0;
+    private int lastTypedLength = 0;
     private int lastOpponentErrors = 0;
 
     private int multiplayerRoundSeconds = 20;
@@ -440,10 +441,18 @@ public class GameController {
 
     // -------------------- PLAYER INPUT --------------------
     private void onPlayerType() {
+
+        String typedRaw = ui.inputField.getText();
+
+        // BACKSPACE do not count errors
+        if (typedRaw.length() < lastTypedLength) {
+            lastTypedLength = typedRaw.length();
+            return;
+        }
+
         // ignore when not running or adjusting
         if (!running || adjustingInput) return;
 
-        String typedRaw = ui.inputField.getText();
         var children = ui.targetTextFlow.getChildren();
 
         // cap for safety if user pastes extra characters
@@ -518,22 +527,23 @@ public class GameController {
         cappedLen = Math.min(typedRaw.length(), children.size());
 
         // Determine the number of newly typed letters
-        int prevTypedLen = prevCorrectCount; // track last correct prefix length (use previous value)
-        int typedLen = typed.length();
+        int prevTypedLen = lastCorrectCount; // track last correct prefix length        int typedLen = typed.length();
         int newErrors = 0;
 
         // Only check new characters that were just typed
-        for (int i = prevTypedLen; i < typedLen; i++) {
-            if (i >= playerPassage.length()) break; // safety
-            char typedChar = typed.charAt(i);
-            char targetChar = playerPassage.charAt(i);
+        if (typedRaw.length() > lastTypedLength) {
+            int i = typedRaw.length() - 1;
 
-            if (typedChar != targetChar) {
-                newErrors++;
-                // Mark this character RED immediately in TextFlow
-                Text t = (Text) children.get(i);
-                t.setFill(Color.RED);
+            if (i < playerPassage.length()
+                    && typedRaw.charAt(i) != playerPassage.charAt(i)) {
+
+                newErrors = 1;
+                ((Text) ui.targetTextFlow.getChildren().get(i)).setFill(Color.RED);
             }
+        }
+        if (newErrors == 1) {
+            playerCumulativeErrors++;
+            scoreManager.setPlayerErrors(playerCumulativeErrors);
         }
 
         // Increment cumulative errors only by the newly typed wrong letters
