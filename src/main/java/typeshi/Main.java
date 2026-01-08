@@ -70,7 +70,7 @@ public class Main extends Application {
 
         scene.setRoot(ui.rootPane);        // keep same Scene, size, fullscreen
 
-        controller.startGameWithCountdown(20, aiDifficulty); // 60 seconds, adjust as you like
+        controller.startGameWithCountdown(60, aiDifficulty); // 60 seconds, adjust as you like
     }
 
     public static void main(String[] args) {
