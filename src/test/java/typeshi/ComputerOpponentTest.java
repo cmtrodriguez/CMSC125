@@ -29,7 +29,7 @@ public class ComputerOpponentTest {
 
         pool.shutdownNow();
 
-        assertFalse(ai.isRunning(), "AI should have finished");
+        assertFalse(ai.isRunning(), "Computer should have finished");
         assertEquals(passage.length(), ai.getPosition(), "Position should match passage length");
         assertEquals(0, ai.getErrors(), "No errors expected");
     }
