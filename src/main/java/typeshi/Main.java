@@ -27,7 +27,6 @@ public class Main extends Application {
             if (css != null) scene.getStylesheets().add(css.toExternalForm());
         } catch (Exception ex) {
             ex.printStackTrace();
-
         }
 
         primaryStage.setScene(scene);
@@ -153,7 +152,6 @@ public class Main extends Application {
                 });
             }
 
-            // create game screen
             UIComponents ui = new UIComponents();
             GameController controller = new GameController(ui);
             ui.setController(controller);
@@ -239,7 +237,7 @@ public class Main extends Application {
 
         scene.setRoot(ui.rootPane);
 
-        controller.startGameWithCountdown(60, aiDifficulty);
+        controller.startGameWithCountdown(60, aiDifficulty); // 60 seconds, adjust as you like
     }
 
     public static void main(String[] args) {
