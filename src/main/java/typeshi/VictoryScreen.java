@@ -28,7 +28,6 @@ public class VictoryScreen {
 
         this.onBack = onBack;
 
-        // 🔑 FINAL SCORE LOGIC (ONLY PLACE IT EXISTS)
         int playerFinal = playerScore - playerErrors;
         int computerFinal = computerScore - computerErrors;
 
