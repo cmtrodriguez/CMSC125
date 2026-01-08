@@ -9,41 +9,39 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
-import javafx.scene.paint.Color;
-import javafx.scene.text.Font;
 import javafx.scene.media.Media;
 import javafx.scene.media.MediaPlayer;
+import javafx.scene.paint.Color;
 
 public class VictoryScreen {
 
     private final StackPane root = new StackPane();
     private MediaPlayer mediaPlayer;
-    private final Runnable onBack; // optional callback when Back button is pressed
+    private final Runnable onBack;
 
-    /**
-     * Main constructor allowing an onBack callback from callers.
-     */
     public VictoryScreen(int playerScore,
                          int computerScore,
                          int playerErrors,
                          int computerErrors,
                          Runnable onBack,
                          boolean isMultiplayer) {
+
         this.onBack = onBack;
 
-        // Prevent Enter from activating buttons unintentionally on the victory screen
+        // 🔑 FINAL SCORE LOGIC (ONLY PLACE IT EXISTS)
+        int playerFinal = playerScore - playerErrors;
+        int computerFinal = computerScore - computerErrors;
+
+        boolean playerWon = playerFinal > computerFinal;
+
+        // Prevent Enter from triggering buttons
         root.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             if (e.getCode() == javafx.scene.input.KeyCode.ENTER) {
                 e.consume();
             }
         });
 
-        // Determine if player won or lost
-        boolean playerWon = playerScore > computerScore;
-
-        // ---------- BACKGROUND GIF (win or loss specific) ----------
-        // Victory: src/main/resources/images/victory.gif
-        // Defeat:  src/main/resources/images/defeat.gif
+        // ---------- BACKGROUND ----------
         ImageView bgView = null;
         try {
             String gifPath = playerWon ? "/images/victory.gif" : "/images/defeat.gif";
@@ -51,25 +49,18 @@ public class VictoryScreen {
             if (url != null) {
                 Image bgImage = new Image(url.toExternalForm());
                 bgView = new ImageView(bgImage);
-                bgView.setPreserveRatio(false); // stretch to fill window
+                bgView.setPreserveRatio(false);
                 bgView.fitWidthProperty().bind(root.widthProperty());
                 bgView.fitHeightProperty().bind(root.heightProperty());
-            } else {
-                System.err.println("Background image not found: " + gifPath + " — using fallback background");
-                // fallback background style applied below if no bgView
             }
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            bgView = null;
-        }
+        } catch (Exception ignored) {}
 
-        // ---------- TEXT / UI OVERLAY ----------
         String opponentLabel = isMultiplayer ? "Opponent" : "Computer";
 
         String winnerText;
-        if (playerScore > computerScore) {
+        if (playerFinal > computerFinal) {
             winnerText = "YOU WIN!";
-        } else if (playerScore < computerScore) {
+        } else if (playerFinal < computerFinal) {
             winnerText = isMultiplayer ? "OPPONENT WINS!" : "COMPUTER WINS!";
         } else {
             winnerText = "DRAW!";
@@ -81,73 +72,55 @@ public class VictoryScreen {
         Label winnerLabel = new Label(winnerText);
         winnerLabel.getStyleClass().add("victory-winner");
 
+        // 🔹 SHOW BOTH RAW + FINAL SCORE (VERY CLEAR)
         Label youStats = new Label(
-                String.format("You: %d points, %d errors", playerScore, playerErrors)
+                String.format(
+                        "You: %d points, %d errors  →  Final: %d",
+                        playerScore, playerErrors, playerFinal
+                )
         );
-        youStats.getStyleClass().add("stats");
 
-        Label compStats = new Label(
-                String.format("%s: %d points, %d errors", opponentLabel, computerScore, computerErrors)
+        Label oppStats = new Label(
+                String.format(
+                        "%s: %d points, %d errors  →  Final: %d",
+                        opponentLabel, computerScore, computerErrors, computerFinal
+                )
         );
-        compStats.getStyleClass().add("stats");
+
+        youStats.getStyleClass().add("stats");
+        oppStats.getStyleClass().add("stats");
 
         Button backButton = new Button("Back to Menu");
-        backButton.setDefaultButton(false);
         backButton.getStyleClass().addAll("button", "primary");
         backButton.setOnAction(e -> {
-            if (mediaPlayer != null) {
-                mediaPlayer.stop();
-            }
-            if (this.onBack != null) {
-                try { this.onBack.run(); } catch (Exception ex) { ex.printStackTrace(); }
-            } else {
-                try {
-                    // Replace the current scene root with the Home screen so the player returns to menu
-                    if (root.getScene() != null) {
-                        root.getScene().setRoot(new HomeScreen().getRoot());
-                    } else {
-                        // Fallback: hide window if scene is unexpectedly null
-                        root.getScene().getWindow().hide();
-                    }
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                    // In case of any error, hide the window as a last resort
-                    if (root.getScene() != null) root.getScene().getWindow().hide();
-                }
+            if (mediaPlayer != null) mediaPlayer.stop();
+            if (onBack != null) {
+                onBack.run();
+            } else if (root.getScene() != null) {
+                root.getScene().setRoot(new HomeScreen().getRoot());
             }
         });
 
-        VBox overlay = new VBox(10, timesUp, winnerLabel, youStats, compStats, backButton);
-        overlay.setAlignment(Pos.TOP_CENTER);
-        overlay.setPadding(new Insets(40, 20, 20, 20));
-        overlay.setMaxWidth(500);
-        overlay.setStyle(
-                "-fx-background-color: rgba(0,0,0,0.35); " +
+        VBox card = new VBox(12, timesUp, winnerLabel, youStats, oppStats, backButton);
+        card.setAlignment(Pos.CENTER);
+        card.setPadding(new Insets(30));
+        card.setMaxWidth(620);
+        card.setStyle(
+                "-fx-background-color: rgba(0,0,0,0.35);" +
                         "-fx-background-radius: 20;"
         );
 
-        VBox centerCard = new VBox(12, timesUp, winnerLabel, youStats, compStats, backButton);
-        centerCard.setAlignment(Pos.CENTER);
-        centerCard.getStyleClass().add("card");
-        centerCard.setMaxWidth(620);
-
         if (bgView != null) {
-            root.getChildren().addAll(bgView, centerCard);
+            root.getChildren().addAll(bgView, card);
         } else {
-            // apply a simple fallback background so the overlay is visible
-            root.setStyle("-fx-background-color: linear-gradient(to bottom, #111111, #2b2b2b);");
-            root.getChildren().add(centerCard);
+            root.setStyle("-fx-background-color: #111;");
+            root.getChildren().add(card);
         }
 
-        StackPane.setAlignment(centerCard, Pos.CENTER);
-
-        // Play audio (if available) — kept in separate try/catch within method
+        StackPane.setAlignment(card, Pos.CENTER);
         playVictoryMusic(winnerText);
     }
 
-    /**
-     * Backwards-compatible constructor that does not provide a callback.
-     */
     public VictoryScreen(int playerScore,
                          int computerScore,
                          int playerErrors,
@@ -155,9 +128,6 @@ public class VictoryScreen {
         this(playerScore, computerScore, playerErrors, computerErrors, null, false);
     }
 
-    /**
-     * Constructor with callback but no multiplayer flag (defaults to singleplayer).
-     */
     public VictoryScreen(int playerScore,
                          int computerScore,
                          int playerErrors,
@@ -168,24 +138,14 @@ public class VictoryScreen {
 
     private void playVictoryMusic(String winnerText) {
         try {
-            String fileName = "audio/victory.mp3";
-            if (!winnerText.contains("YOU")) {
-                fileName = "audio/defeat.mp3";
-            }
+            String file = winnerText.contains("YOU") ? "audio/victory.mp3" : "audio/defeat.mp3";
+            var url = getClass().getResource("/" + file);
+            if (url == null) return;
 
-            var url = getClass().getResource("/" + fileName);
-            if (url == null) {
-                System.err.println("Audio file not found: " + fileName);
-                return;
-            }
-
-            Media media = new Media(url.toExternalForm());
-            mediaPlayer = new MediaPlayer(media);
+            mediaPlayer = new MediaPlayer(new Media(url.toExternalForm()));
             mediaPlayer.setVolume(0.6);
             mediaPlayer.play();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception ignored) {}
     }
 
     public Parent getRoot() {

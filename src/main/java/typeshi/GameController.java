@@ -1147,19 +1147,25 @@ public class GameController {
             });
             return;
         }
-
-        // Multiplayer: send final score and wait for opponent final score (do not reveal opponent mid-game)
+        // Multiplayer: send final score and show results ONLY when both sides are ready
         if (multiplayer) {
-            // already sent above if necessary
-            if (opponentFinalScore != null) {
-                // Opponent already sent -> show results (with a short delay so UI is stable)
-                delayedShowMultiplayerResults(250);
-            } else {
-                // wait asynchronously for opponent final score (timeout inside)
-                waitForFinalScores();
+
+            // Ensure local final score is sent exactly once
+            if (!localFinalScoreSent && networkOpponent != null) {
+                localFinalScoreSent = true;
+                try {
+                    networkOpponent.sendFinalScore(
+                            scoreManager.getPlayerScore(),
+                            scoreManager.getPlayerErrors()
+                    );
+                } catch (Exception ignored) {}
             }
+
+            // Centralized, safe attempt to show results
+            tryShowMultiplayerResults();
             return;
         }
+
 
         // Singleplayer final display (existing behavior)
         Platform.runLater(() -> {
@@ -1212,7 +1218,6 @@ public class GameController {
     }
 
     private void showMultiplayerResults() {
-        // safe defaults if something went wrong
         int myScore = scoreManager.getPlayerScore();
         int myErrors = scoreManager.getPlayerErrors();
         int oppScore = opponentFinalScore != null ? opponentFinalScore : 0;
@@ -1223,8 +1228,8 @@ public class GameController {
             if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
 
             VictoryScreen victory = new VictoryScreen(
-                    myScore,
-                    oppScore,
+                    myScore,        // RAW score
+                    oppScore,       // RAW score
                     myErrors,
                     oppErrors,
                     onReturnToMenu,
@@ -1232,11 +1237,10 @@ public class GameController {
             );
 
             ui.rootPane.getScene().setRoot(victory.getRoot());
-
-            // Cleanup network AFTER displaying results (important!)
             safeNetworkCleanup();
         });
     }
+
 
     /**
      * Stop and null network resources safely. Called AFTER results are displayed.
@@ -1577,12 +1581,31 @@ public class GameController {
      * Called by NetworkOpponent when opponent final score is received.
      */
     public void onOpponentFinalScore(int score, int errors) {
-        opponentFinalScore = score;
-        opponentFinalErrors = errors;
+        this.opponentFinalScore = score;
+        this.opponentFinalErrors = errors;
 
-        // If we've already sent our final score, show results (delayed slightly for safety)
-        if (localFinalScoreSent) {
-            delayedShowMultiplayerResults(200);
-        }
+        // try to show results (this is centralized and safe)
+        tryShowMultiplayerResults();
+    }
+
+    private boolean canShowResults() {
+        // must be multiplayer, both sides' final state sent, and UI scene attached
+        return multiplayer
+                && localFinalScoreSent
+                && opponentFinalScore != null
+                && ui != null
+                && ui.rootPane != null
+                && ui.rootPane.getScene() != null;
+    }
+
+    private void tryShowMultiplayerResults() {
+        // quick non-FX check first
+        if (!canShowResults()) return;
+
+        Platform.runLater(() -> {
+            // double-check on FX thread
+            if (!canShowResults()) return;
+            showMultiplayerResults();
+        });
     }
 }
