@@ -27,13 +27,10 @@ public class NetworkOpponent implements Runnable {
         send("PROGRESS:" + position + ":" + errors);
     }
 
-    public void sendFinished() {
-        send("FINISHED");
+    public void sendAbsoluteProgress(int position, int errors) {
+        send("ABS:" + position + ":" + errors);
     }
 
-    public void sendDisconnect() {
-        send("DISCONNECT");
-    }
     public void sendPause() {
         send("PAUSE");
     }
@@ -41,6 +38,19 @@ public class NetworkOpponent implements Runnable {
     public void sendResume() {
         send("RESUME");
     }
+
+    public void sendFinished() {
+        send("FINISHED");
+    }
+
+    public void sendFinalScore(int score, int errors) {
+        send("FINAL_SCORE:" + score + ":" + errors);
+    }
+
+    public void sendDisconnect() {
+        send("DISCONNECT");
+    }
+
 
 
     private void send(String msg) {
@@ -82,18 +92,30 @@ public class NetworkOpponent implements Runnable {
                         Platform.runLater(controller::onComputerFinished);
                         break;
 
-
-
                     default:
-                        if (msg.startsWith("PROGRESS:")) {
+                        if (msg.startsWith("PROGRESS:") || msg.startsWith("ABS:")) {
                             String[] p = msg.split(":");
                             int position = Integer.parseInt(p[1]);
                             int errors = Integer.parseInt(p[2]);
 
                             Platform.runLater(() ->
-                                    controller.updateComputerProgress(position, errors)
+                                    controller.updateOpponentFromNetwork(position, errors)
                             );
                         }
+                        else if (msg.startsWith("FINAL_SCORE:")) {
+                            String[] p = msg.split(":");
+                            int score = Integer.parseInt(p[1]);
+                            int errors = Integer.parseInt(p[2]);
+
+                            Platform.runLater(() ->
+                                    controller.onOpponentFinalScore(score, errors)
+                            );
+                        }
+
+                        break;
+
+
+
                 }
             }
         } catch (Exception e) {
