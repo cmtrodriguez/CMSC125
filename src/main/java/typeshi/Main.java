@@ -13,7 +13,7 @@ import java.util.Optional;
 public class Main extends Application {
 
     private Stage primaryStage;
-    private Scene scene;       // one shared scene
+    private Scene scene;       // One shared scene
 
     @Override
     public void start(Stage primaryStage) {
@@ -35,11 +35,10 @@ public class Main extends Application {
             if (!cancelBtn.getStyleClass().contains("cancel-button")) {
                 cancelBtn.getStyleClass().add("cancel-button");
             }
-            // do not set sizes here — let JavaFX size the buttons natively
         }
 
         if (okBtn != null) {
-            // keep default sizing for OK (do not override)
+            // Keep default sizing for OK (do not override)
         }
     }
     /* ========================================================= */
@@ -95,7 +94,7 @@ public class Main extends Application {
 
         dialog.setOnShown(e -> styleDialogCancelLikeOk(dialog));
 
-        // show and handle cancellation: if user cancels, return to home
+        // Show and handle cancellation: if user cancels, return to home
         Optional<String> choiceOpt = dialog.showAndWait();
         if (!choiceOpt.isPresent()) {
             showHomeScreen();
@@ -167,7 +166,7 @@ public class Main extends Application {
             try { chosenRounds[0] = Math.max(1, Integer.parseInt(r.trim())); } catch (Exception ignored) { chosenRounds[0] = 1; }
         }
 
-        // create game screen
+        // Create game screen
         UIComponents ui = new UIComponents();
         GameController controller = new GameController(ui);
         ui.setController(controller);
@@ -194,7 +193,7 @@ public class Main extends Application {
 
             Optional<String> ipOpt = ipInput.showAndWait();
             if (!ipOpt.isPresent()) {
-                // user cancelled IP input -> go back home
+                // User cancelled IP input -> go back home
                 showHomeScreen();
                 return;
             }

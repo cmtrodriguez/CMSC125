@@ -50,10 +50,10 @@ public class GameController {
     private boolean running = false;
     private int currentDifficulty = 5;
 
-    private boolean paused = false; // pause state
-    private StackPane pauseOverlay; // legacy overlay (not used when modal stage exists)
-    private Stage pauseStage = null; // modal stage for pause dialog
-    private int initialDurationSeconds = 0; // preserve initial duration for restart
+    private boolean paused = false; // Pause state
+    private StackPane pauseOverlay; // Legacy overlay (not used when modal stage exists)
+    private Stage pauseStage = null; // Modal stage for pause dialog
+    private int initialDurationSeconds = 0; // Preserve initial duration for restart
 
     // Multiplayer declaration
     private boolean multiplayer = false;
@@ -63,7 +63,7 @@ public class GameController {
     private MultiplayerClient mpClient;
     private boolean multiplayerActive = false;
 
-    // final-score sync
+    // Final-score sync
     private Integer opponentFinalScore = null;
     private Integer opponentFinalErrors = null;
     private boolean localFinalScoreSent = false;
@@ -76,7 +76,7 @@ public class GameController {
     private int multiplayerRoundSeconds = 20;
     private int multiplayerPort = 5000;
 
-    // scoring
+    // Scoring
     private final ScoreManager scoreManager = new ScoreManager();
     private int lastCorrectCount = 0;
 
@@ -86,10 +86,10 @@ public class GameController {
     // For HARD fading (player side)
     private int fadeIndex = 0;
 
-    // separate fade index for computer side
+    // Separate fade index for computer side
     private int computerFadeIndex = 0;
 
-    // handle the scheduled HARD fade task so we can cancel/reschedule it
+    // Handle the scheduled HARD fade task so we can cancel/reschedule it
     private ScheduledFuture<?> hardFadeFuture = null;
 
     // Guard flag so programmatic text changes do not recurse badly
@@ -98,32 +98,35 @@ public class GameController {
     // Track which character positions have been auto-backspaced (Medium/Hard)
     private final java.util.Set<Integer> backspacedPositions = new java.util.HashSet<>();
 
-    // current passages for each side
+    // Current passages for each side
     private String playerPassage;
     private String computerPassage;
 
-    // shared ordered sequence of passages
+    // Shared ordered sequence of passages
     private final List<String> passageSequence = new ArrayList<>();
     private int playerPassageIndex = 0;
     private int computerPassageIndex = 0;
 
-    // how many passages each has finished (for stats)
+    // Track passages used in the current round to avoid repeats
+    private final java.util.Set<String> usedPassagesInRound = new java.util.HashSet<>();
+
+    // How many passages each has finished (for stats)
     private int playerFinishedCount = 0;
     private int computerFinishedCount = 0;
 
-    // track if current computer passage has already been handled
+    // Track if current computer passage has already been handled
     private boolean computerPassageDone = false;
 
     private Runnable onReturnToMenu = null;
 
-    // rounds support
+    // Rounds support
     private int totalRounds = 1;
     private int currentRound = 1;
     // UI controls placed near pause button
     private Label roundLabelNode = null;
     private Button backToHomeButton = null;
 
-    // countdown state so Pause works even while the 3-2-1 overlay runs
+    // Countdown state so Pause works even while the 3-2-1 overlay runs
     private boolean countdownActive = false;
     private Timeline countdownTimeline = null;
 
@@ -131,15 +134,52 @@ public class GameController {
         this.ui = ui;
         this.wordGenerator = new WordGenerator();
 
-        // allow tests to pass null for UI to avoid JavaFX initialization
+        // Allow tests to pass null for UI to avoid JavaFX initialization
         if (this.ui != null) {
             setupGameUI();
         }
     }
 
-    // calls before startGame: 1=Easy, 2=Medium, 3=Hard
+    // Called before startGame: 1 = Easy, 2 = Medium, 3 = Hard
     public void setMode(int mode) {
         this.mode = mode;
+        // If UI is present, regenerate the current passage to reflect new mode
+        if (this.ui != null) {
+            passageSequence.clear();
+            usedPassagesInRound.clear();
+            playerPassageIndex = 0;
+            computerPassageIndex = 0;
+
+            String first = getOrCreatePassageAt(0);
+            playerPassage = first;
+            computerPassage = first;
+            fadeIndex = 0;
+            computerFadeIndex = 0;
+            computerPassageDone = false;
+
+            Platform.runLater(() -> {
+                ui.targetTextFlow.getChildren().clear();
+                for (char c : playerPassage.toCharArray()) {
+                    Text t = new Text(String.valueOf(c));
+                    t.setFill(Color.WHITE);
+                    t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
+                    ui.targetTextFlow.getChildren().add(t);
+                }
+
+                ui.computerTextFlow.getChildren().clear();
+                for (char c : computerPassage.toCharArray()) {
+                    Text t = new Text(String.valueOf(c));
+                    t.setFill(Color.GRAY);
+                    t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
+                    ui.computerTextFlow.getChildren().add(t);
+                }
+
+                ui.inputField.clear();
+                ui.playerProgress.setProgress(0);
+                ui.computerProgress.setProgress(0);
+                lastCorrectCount = 0;
+            });
+        }
     }
 
     public void setOnReturnToMenu(Runnable onReturnToMenu) {
@@ -149,24 +189,25 @@ public class GameController {
     public void setTotalRounds(int total) {
         this.totalRounds = Math.max(1, total);
         this.currentRound = 1;
-        // update visible label if already present
+        // Update visible label if already present
         if (roundLabelNode != null) {
             Platform.runLater(() -> roundLabelNode.setText("Round " + currentRound + " / " + totalRounds));
         }
     }
 
     private void setupGameUI() {
-        // listen for typing
+        // Listen for typing
         ui.inputField.textProperty().addListener((obs, oldVal, newVal) -> onPlayerType());
 
-        // consume enter
+        // Consume enter
         ui.inputField.setOnAction(e -> {
             e.consume();
             onPlayerType();
         });
 
-        // reset passages
+        // Reset passages
         passageSequence.clear();
+        usedPassagesInRound.clear();
         playerPassageIndex = 0;
         computerPassageIndex = 0;
 
@@ -178,7 +219,7 @@ public class GameController {
         computerFadeIndex = 0;
         computerPassageDone = false;
 
-        // build player TextFlow
+        // Build player TextFlow
         ui.targetTextFlow.getChildren().clear();
         for (char c : playerPassage.toCharArray()) {
             Text t = new Text(String.valueOf(c));
@@ -187,7 +228,7 @@ public class GameController {
             ui.targetTextFlow.getChildren().add(t);
         }
 
-        // build computer TextFlow
+        // Build computer TextFlow
         ui.computerTextFlow.getChildren().clear();
         for (char c : computerPassage.toCharArray()) {
             Text t = new Text(String.valueOf(c));
@@ -204,12 +245,12 @@ public class GameController {
         lastOpponentPosition = 0;
         lastOpponentErrors = 0;
 
-        // prepare pause button + round label
+        // Prepare pause button + round label
         if (ui.pauseButton != null) {
             ui.pauseButton.setDisable(false);
             ui.pauseButton.setVisible(true);
             ui.pauseButton.setOnAction(e -> togglePause());
-            // copies the text message in order to have a dialog box
+            // Copies the text message in order to have a dialog box
             Node parent = ui.pauseButton.getParent();
             if (parent instanceof HBox) {
                 HBox topBox = (HBox) parent;
@@ -225,29 +266,31 @@ public class GameController {
         }
     }
 
-    // generate or reuse passage
+    // Generate or reuse passage. Avoid repeats within the current round
     private String getOrCreatePassageAt(int index) {
         while (index >= passageSequence.size()) {
-            passageSequence.add(wordGenerator.getRandomPassage());
+            String p = wordGenerator.getRandomPassage(this.mode, usedPassagesInRound);
+            passageSequence.add(p);
+            usedPassagesInRound.add(p);
         }
         return passageSequence.get(index);
     }
 
     // Game that has countdown
     public void startGameWithCountdown(int durationSeconds, int difficulty) {
-        // remember duration
+        // Remember duration
         this.initialDurationSeconds = durationSeconds;
 
-        // update round label
+        // Update round label
         if (roundLabelNode != null) {
             Platform.runLater(() -> roundLabelNode.setText("Round " + currentRound + " / " + totalRounds));
         }
         countdownActive = true;
-        // block typing
+        // Block typing
         ui.inputField.setDisable(true);
-        // remember existing center content (player/computer HBox)
+        // Remember existing center content (player/computer HBox)
         javafx.scene.Node originalCenter = ui.rootPane.getCenter();
-        // overlay + dim
+        // Overlay + dim
         Rectangle dim = new Rectangle();
         Label countdownText = new Label("3");
         countdownText.setTextFill(Color.WHITE);
@@ -255,13 +298,13 @@ public class GameController {
 
         StackPane overlay = new StackPane(dim, countdownText);
         overlay.setAlignment(Pos.CENTER);
-        // stack = existing center content + overlay on top
+        // Stack = existing center content + overlay on top
         StackPane centerStack = new StackPane(originalCenter, overlay);
         dim.widthProperty().bind(centerStack.widthProperty());
         dim.heightProperty().bind(centerStack.heightProperty());
         dim.setFill(new Color(0, 0, 0, 0.25)); // light dim
 
-        // temporarily replace center with stacked version
+        // Temporarily replace center with stacked version
         ui.rootPane.setCenter(centerStack);
 
         // Use field so pause can stop the countdown
@@ -275,7 +318,7 @@ public class GameController {
                 new KeyFrame(Duration.seconds(2), e -> countdownText.setText("1")),
                 new KeyFrame(Duration.seconds(3), e -> countdownText.setText("GO!")),
                 new KeyFrame(Duration.seconds(3.5), e -> {
-                    // remove overlay: restore original center node
+                    // Remove overlay: restore original center node
                     ui.rootPane.setCenter(originalCenter);
                     ui.inputField.setDisable(false);
                     ui.inputField.requestFocus();
@@ -309,7 +352,7 @@ public class GameController {
         countdownActive = true;
         PauseTransition pause = new PauseTransition(Duration.seconds(1.5));
         pause.setOnFinished(e -> {
-            // remove overlay and continue to countdown for next round
+            // Remove overlay and continue to countdown for next round
             ui.rootPane.setCenter(originalCenter);
             countdownActive = false;
             onFinished.run();
@@ -325,7 +368,7 @@ public class GameController {
         remainingSeconds = durationSeconds;
         currentDifficulty = difficulty;
 
-        // reset scores at match start only
+        // Reset scores at match start only
         if (currentRound == 1) scoreManager.reset();
 
         playerFinishedCount = 0;
@@ -336,11 +379,11 @@ public class GameController {
         lastOpponentErrors = 0;
 
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
-        // in multiplayer keep opponent score hidden until final
+        // In multiplayer, keep opponent score hidden until final
         if (!multiplayer) ui.computerScoreLabel.setText(scoreManager.computerSummary());
         else ui.computerScoreLabel.setText("Score: ? | Errors: ?");
 
-        // Scheduled thread pool for timer (+ optional fade). AI only when NOT multiplayer.
+        // Scheduled thread pool for timer (+ optional fade). Computer only when NOT multiplayer.
         backgroundPool = Executors.newScheduledThreadPool(3);
 
         if (!multiplayer) {
@@ -350,7 +393,7 @@ public class GameController {
             }, 0, 100, TimeUnit.MILLISECONDS);
         } else {
             computer = null; // opponent is remote
-            // reset final-score flags for a fresh match
+            // Reset final-score flags for a fresh match
             opponentFinalScore = null;
             opponentFinalErrors = null;
             localFinalScoreSent = false;
@@ -373,12 +416,12 @@ public class GameController {
         if (mode == 3) {
             fadeIndex = 0;
             computerFadeIndex = 0;
-            // cancel previously-scheduled hard fade (if any)
+            // Cancel previously-scheduled hard fade (if any)
             if (hardFadeFuture != null) {
                 hardFadeFuture.cancel(false);
                 hardFadeFuture = null;
             }
-            // start with a short grace so the first passage is visible (no immediate fading)
+            // Start with a short grace so the first passage is visible (no immediate fading)
             hardFadeFuture = backgroundPool.scheduleAtFixedRate(
                     () -> { if (!paused) Platform.runLater(() -> { fadeNextWord(); fadeNextComputerWord(); }); },
                     3, 3, TimeUnit.SECONDS
@@ -421,7 +464,7 @@ public class GameController {
 
     // -------------------- START NEW PASSAGE (COMPUTER ONLY) --------------------
     private void startComputerPassage() {
-        computerPassageIndex++; // AI moves ahead in shared sequence
+        computerPassageIndex++; // Computer moves ahead in shared sequence
         computerPassage = getOrCreatePassageAt(computerPassageIndex);
         computerPassageDone = false;
 
@@ -445,7 +488,7 @@ public class GameController {
         if (typedRaw.length() < lastTypedLength) {
             lastTypedLength = typedRaw.length();
 
-            // send absolute progress (do not reveal score)
+            // Send absolute progress (do not reveal score)
             int correctedPos = Math.min(typedRaw.length(), playerPassage.length());
 
             if (multiplayer && networkOpponent != null) {
@@ -455,7 +498,7 @@ public class GameController {
             return;
         }
 
-        // ignore when not running or adjusting
+        // Ignore when not running or adjusting
         if (!running || adjustingInput) return;
 
         var children = ui.targetTextFlow.getChildren();
@@ -595,7 +638,7 @@ public class GameController {
         shake.play();
     }
 
-    // hard: fade (hide) the next word from the targetTextFlow
+    // HARD: fade (hide) the next word from the targetTextFlow
     private void fadeNextWord() {
         var children = ui.targetTextFlow.getChildren();
         if (children.isEmpty()) return;
@@ -616,7 +659,7 @@ public class GameController {
         }
     }
 
-    // hard: fade next computer word
+    // HARD: fade next computer word
     private void fadeNextComputerWord() {
         var children = ui.computerTextFlow.getChildren();
         if (children.isEmpty()) return;
@@ -655,7 +698,7 @@ public class GameController {
     }
 
     /**
-     * AI-only UI update.
+     * COMPUTER-only UI update.
      * lastWasCorrect indicates whether the most recently typed character was correct.
      */
     public void updateComputerTyping(int position, int errors, boolean lastWasCorrect) {
@@ -669,7 +712,7 @@ public class GameController {
             scoreManager.setComputerProgress(progress);
             scoreManager.setComputerErrors(errors);
 
-            // don't award if last character was hidden by HARD fading
+            // Don't award if last character was hidden by HARD fading
             boolean wasHidden = false;
             if (position > 0 && position - 1 < total) {
                 Text lastChar = (Text) ui.computerTextFlow.getChildren().get(position - 1);
@@ -679,7 +722,7 @@ public class GameController {
 
             ui.computerScoreLabel.setText(scoreManager.computerSummary());
 
-            // update coloring + caret
+            // Update coloring + caret
             for (int i = 0; i < total; i++) {
                 Text t = (Text) ui.computerTextFlow.getChildren().get(i);
                 t.setUnderline(i == position);
@@ -738,11 +781,11 @@ public class GameController {
             int total = ui.computerTextFlow.getChildren().size();
             int pos = Math.max(0, Math.min(position, total));
 
-            // progress bar (visual only)
+            // Progress bar (visual only)
             double progress = total == 0 ? 0.0 : (double) pos / total;
             ui.computerProgress.setProgress(progress);
 
-            // update coloring (visual feedback) but DO NOT touch scoreManager/computerScoreLabel mid-game
+            // Update coloring (visual feedback) but DO NOT touch scoreManager/computerScoreLabel mid-game
             for (int i = 0; i < total; i++) {
                 Text t = (Text) ui.computerTextFlow.getChildren().get(i);
                 t.setUnderline(i == pos);
@@ -889,19 +932,19 @@ public class GameController {
 
     void returnToHomeFromPause() {
 
-        // stop timers
+        // Stop timers
         if (backgroundPool != null) backgroundPool.shutdownNow();
         if (hardFadeFuture != null) hardFadeFuture.cancel(false);
 
         running = false;
         paused = false;
 
-        // only notify opponent if match actually started
+        // Only notify opponent if match actually started
         if (multiplayer && multiplayerActive && networkOpponent != null) {
             networkOpponent.sendDisconnect();
         }
 
-        // close network
+        // Close network
         if (networkOpponent != null) {
             networkOpponent.stop();
             networkOpponent = null;
@@ -1008,7 +1051,7 @@ public class GameController {
         });
 
         if (multiplayer) {
-            // in multiplayer: avoid duplicate "back to menu" — use restart ("back to menu") and don't show home
+            // In multiplayer: avoid duplicate "back to menu" — use restart ("back to menu") and don't show home
             menu.getChildren().addAll(resume, restart, exit);
         } else {
             menu.getChildren().addAll(resume, restart, home, exit);
@@ -1087,7 +1130,7 @@ public class GameController {
         if (gameEnded) return;
         gameEnded = true;
 
-        // mark local final sent and send final score (if multiplayer)
+        // Mark local final sent and send final score (if multiplayer)
         if (multiplayer && networkOpponent != null && !localFinalScoreSent) {
             localFinalScoreSent = true;
             networkOpponent.sendFinalScore(
@@ -1112,6 +1155,7 @@ public class GameController {
 
                 // Prepare fresh passages for next round (preserve cumulative scores)
                 passageSequence.clear();
+                usedPassagesInRound.clear();
                 playerPassageIndex = 0;
                 computerPassageIndex = 0;
                 String first = getOrCreatePassageAt(0);
@@ -1193,13 +1237,13 @@ public class GameController {
             while (opponentFinalScore == null) {
                 try { Thread.sleep(50); } catch (InterruptedException ignored) {}
 
-                // safety timeout (prevents infinite hang)
+                // Safety timeout (prevents infinite hang)
                 if (System.currentTimeMillis() - start > 5000) {
                     break;
                 }
             }
 
-            // show results (with a tiny additional delay to allow last packet processing)
+            // Show results (with a tiny additional delay to allow last packet processing)
             delayedShowMultiplayerResults(200);
 
         }).start();
@@ -1279,7 +1323,7 @@ public class GameController {
         }
         if (ui == null) return;
 
-        // change labels (requires UIComponents fields)
+        // Change labels (requires UIComponents fields)
         if (ui.opponentTitleLabel != null) ui.opponentTitleLabel.setText("Player");
         if (ui.bottomInstructionLabel != null) ui.bottomInstructionLabel.setText(statusText);
 
@@ -1294,19 +1338,19 @@ public class GameController {
 
         ui.timerLabel.setText("00:00");
         ui.playerScoreLabel.setText("Score: 0 | Errors: 0");
-        // keep opponent score hidden until final
+        // Keep opponent score hidden until final
         ui.computerScoreLabel.setText("Score: ? | Errors: ?");
 
         ui.logBox.getChildren().clear();
 
-        // ensure pause is available in lobby
+        // Ensure pause is available in lobby
         if (ui.pauseButton != null) {
             ui.pauseButton.setVisible(true);
             ui.pauseButton.setDisable(false);
         }
     }
 
-    // confirm exit modal; if cancelled, re-show the pause modal passed as argument.
+    // Confirm exit modal; if cancelled, re-show the pause modal passed as argument.
     private void showExitConfirm(Stage pauseModal) {
         Window owner = (pauseModal != null) ? pauseModal : (ui != null && ui.rootPane != null && ui.rootPane.getScene() != null ? ui.rootPane.getScene().getWindow() : null);
 
@@ -1345,14 +1389,14 @@ public class GameController {
         confirmExit.setFont(Font.font("Consolas", 16));
         confirmExit.setOnAction(ev -> {
 
-            // INFORM OPPONENT FIRST (only if match started)
+            // Inform opponent first (only if match started)
             try {
                 if (multiplayer && multiplayerActive && networkOpponent != null) {
                     networkOpponent.sendDisconnect();
                 }
             } catch (Exception ignored) {}
 
-            // CLEANUP NETWORK
+            // Cleanup network
             try {
                 if (networkOpponent != null) {
                     networkOpponent.stop();
@@ -1363,7 +1407,7 @@ public class GameController {
             multiplayer = false;
             multiplayerActive = false;
 
-            // EXIT APP
+            // Exit app
             Platform.exit();
             System.exit(0);
         });
@@ -1391,7 +1435,7 @@ public class GameController {
         ft.play();
     }
 
-    // confirm leave match; returns home on confirm, cancels otherwise
+    // Confirm leave match; returns home on confirm, cancels otherwise
     private void showLeaveConfirm(Window owner) {
         Stage confirm = new Stage();
         if (owner != null) confirm.initOwner(owner);
@@ -1423,7 +1467,7 @@ public class GameController {
         leave.setOnAction(e -> {
             try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
             try { confirm.close(); } catch (Exception ignored) {}
-            // return to home
+            // Return to home
             returnToHomeFromPause();
         });
 
@@ -1448,7 +1492,8 @@ public class GameController {
 
     private void setPassageFromNetwork(String passage) {
         while (passageSequence.size() <= 0) {
-            passageSequence.add(wordGenerator.getRandomPassage());
+            passageSequence.add(passage);
+            usedPassagesInRound.add(passage);
         }
         playerPassage = passage;
         computerPassage = passage;
@@ -1459,7 +1504,7 @@ public class GameController {
         computerPassageDone = false;
 
         Platform.runLater(() -> {
-            // build player TextFlow
+            // Build player TextFlow
             ui.targetTextFlow.getChildren().clear();
             for (char c : playerPassage.toCharArray()) {
                 Text t = new Text(String.valueOf(c));
@@ -1468,7 +1513,7 @@ public class GameController {
                 ui.targetTextFlow.getChildren().add(t);
             }
 
-            // build computer TextFlow
+            // Build computer TextFlow
             ui.computerTextFlow.getChildren().clear();
             for (char c : computerPassage.toCharArray()) {
                 Text t = new Text(String.valueOf(c));
@@ -1484,7 +1529,7 @@ public class GameController {
         });
     }
 
-    // host a multiplayer match (called from Main)
+    // Host a multiplayer match (called from Main)
     public void startHostMultiplayer(int port, int roundSeconds, int difficulty, int mode) {
         multiplayer = true;
         isHost = true;
@@ -1503,17 +1548,18 @@ public class GameController {
                 mpServer = new MultiplayerServer(multiplayerPort); // blocks until client connects
                 Platform.runLater(() -> ui.logBox.getChildren().add(new Label("Client connected!")));
 
-                // generate & share passage + cfg
-                String text = wordGenerator.getRandomPassage();
+                // Generate & share passage and config using current mode and avoid repeats
+                String text = wordGenerator.getRandomPassage(this.mode, usedPassagesInRound);
+                usedPassagesInRound.add(text);
                 Platform.runLater(() -> setPassageFromNetwork(text));
                 mpServer.send("TEXT:" + text);
                 mpServer.send("CFG:" + multiplayerRoundSeconds + ":" + currentDifficulty + ":" + this.mode);
 
-                // start receiver loop for opponent updates
+                // Start receiver loop for opponent updates
                 networkOpponent = new NetworkOpponent(this, mpServer, null, true);
                 new Thread(networkOpponent).start();
 
-                // signal start
+                // Signal start
                 mpServer.send("START");
                 multiplayerActive = true;
 
@@ -1529,7 +1575,7 @@ public class GameController {
         }).start();
     }
 
-    // join a hosted match (called from Main)
+    // Join a hosted match (called from Main)
     public void startJoinMultiplayer(String ip, int port) {
         multiplayer = true;
         isHost = false;
@@ -1542,7 +1588,7 @@ public class GameController {
                 mpClient = new MultiplayerClient(ip, multiplayerPort);
                 try { mpClient.send("READY"); } catch (Exception ignored) {}
 
-                // wait for TEXT, CFG, START
+                // Wait for TEXT, CFG, START
                 while (true) {
                     String msg = mpClient.receive();
                     if (msg == null) throw new RuntimeException("Disconnected");
@@ -1559,7 +1605,7 @@ public class GameController {
                     }
                 }
 
-                // start receiver loop
+                // Start receiver loop
                 networkOpponent = new NetworkOpponent(this, null, mpClient, false);
                 new Thread(networkOpponent).start();
 
@@ -1584,12 +1630,12 @@ public class GameController {
         this.opponentFinalScore = score;
         this.opponentFinalErrors = errors;
 
-        // try to show results (this is centralized and safe)
+        // Try to show results (this is centralized and safe)
         tryShowMultiplayerResults();
     }
 
     private boolean canShowResults() {
-        // must be multiplayer, both sides' final state sent, and UI scene attached
+        // Must be multiplayer, both sides' final state sent, and UI scene attached
         return multiplayer
                 && localFinalScoreSent
                 && opponentFinalScore != null
@@ -1599,11 +1645,11 @@ public class GameController {
     }
 
     private void tryShowMultiplayerResults() {
-        // quick non-FX check first
+        // Quick non-FX check first
         if (!canShowResults()) return;
 
         Platform.runLater(() -> {
-            // double-check on FX thread
+            // Double-check on FX thread
             if (!canShowResults()) return;
             showMultiplayerResults();
         });

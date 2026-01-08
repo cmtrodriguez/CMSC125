@@ -39,7 +39,7 @@ public final class ComputerOpponentConfig {
         double mean = 300.0 - (d - 1) * (220.0 / 9.0);
         // Jitter smaller at higher difficulty
         double jitter = 80.0 - (d - 1) * (60.0 / 9.0);
-        // error rate: difficulty 1 => 0.25, difficulty 10 => 0.01
+        // Error rate: difficulty 1 => 0.25, difficulty 10 => 0.01
         double error = 0.25 - (d - 1) * (0.24 / 9.0);
         return new ComputerOpponentConfig(mean, Math.max(10.0, jitter), Math.max(0.01, error));
     }

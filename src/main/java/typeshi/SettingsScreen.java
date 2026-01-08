@@ -105,7 +105,6 @@ public class SettingsScreen {
         Button save = new Button("Save");
         save.getStyleClass().addAll("button", "primary");
         save.setOnAction(e -> {
-            // TODO: persist settings (future work)
         });
 
         backButton = new Button("Back");

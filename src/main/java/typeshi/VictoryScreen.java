@@ -71,7 +71,7 @@ public class VictoryScreen {
         Label winnerLabel = new Label(winnerText);
         winnerLabel.getStyleClass().add("victory-winner");
 
-        // 🔹 SHOW BOTH RAW + FINAL SCORE (VERY CLEAR)
+        // 🔹Show both raw and final score
         Label youStats = new Label(
                 String.format(
                         "You: %d points, %d errors  →  Final: %d",
