@@ -1,12 +1,13 @@
 package typeshi;
 
+import javafx.beans.binding.Bindings;
+import javafx.beans.binding.NumberBinding;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
-import javafx.scene.text.Text;
 import javafx.scene.text.TextFlow;
 
 public class UIComponents {
@@ -31,7 +32,9 @@ public class UIComponents {
     public UIComponents() {
         rootPane = new BorderPane();
         rootPane.setPadding(new Insets(15));
-        rootPane.setStyle("-fx-background-color: linear-gradient(to bottom, #1f1c2c, #928dab);");
+        rootPane.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1f1c2c, #928dab);"
+        );
 
         setupTop();
         setupCenter();
@@ -58,6 +61,13 @@ public class UIComponents {
     private void setupCenter() {
         HBox center = new HBox(25);
         center.setPadding(new Insets(10));
+        center.setAlignment(Pos.TOP_CENTER);
+
+        // Common binding: min 600, otherwise half of window width minus some margin
+        NumberBinding columnWidth = Bindings.max(
+                600,
+                rootPane.widthProperty().divide(2).subtract(60)
+        );
 
         // ===== PLAYER AREA =====
         playerArea = new VBox(15);
@@ -69,8 +79,9 @@ public class UIComponents {
 
         targetTextFlow = new TextFlow();
         targetTextFlow.setPrefHeight(200);
-        targetTextFlow.setMaxWidth(600);
-        targetTextFlow.setStyle("-fx-background-color: #1b1b2f; -fx-padding: 10; -fx-background-radius: 10;");
+        targetTextFlow.setStyle(
+                "-fx-background-color: #1b1b2f; -fx-padding: 10; -fx-background-radius: 10;"
+        );
 
         inputField = new TextField();
         inputField.setPromptText("Type here...");
@@ -78,13 +89,18 @@ public class UIComponents {
         inputField.setStyle("-fx-background-radius: 10; -fx-padding: 8;");
 
         playerProgress = new ProgressBar(0);
-        playerProgress.setPrefWidth(600);
 
         playerScoreLabel = new Label("Score: 0 | Errors: 0");
         playerScoreLabel.setFont(Font.font("Consolas", 16));
         playerScoreLabel.setTextFill(Color.WHITE);
 
-        playerArea.getChildren().addAll(playerLabel, targetTextFlow, inputField, playerProgress, playerScoreLabel);
+        playerArea.getChildren().addAll(
+                playerLabel,
+                targetTextFlow,
+                inputField,
+                playerProgress,
+                playerScoreLabel
+        );
 
         // ===== COMPUTER AREA =====
         computerArea = new VBox(15);
@@ -96,11 +112,11 @@ public class UIComponents {
 
         computerTextFlow = new TextFlow();
         computerTextFlow.setPrefHeight(200);
-        computerTextFlow.setMaxWidth(600);
-        computerTextFlow.setStyle("-fx-background-color: #2b1b1b; -fx-padding: 10; -fx-background-radius: 10;");
+        computerTextFlow.setStyle(
+                "-fx-background-color: #2b1b1b; -fx-padding: 10; -fx-background-radius: 10;"
+        );
 
         computerProgress = new ProgressBar(0);
-        computerProgress.setPrefWidth(600);
 
         computerScoreLabel = new Label("Score: 0 | Errors: 0");
         computerScoreLabel.setFont(Font.font("Consolas", 16));
@@ -110,11 +126,35 @@ public class UIComponents {
         logBox.setPrefHeight(100);
         ScrollPane scrollPane = new ScrollPane(logBox);
         scrollPane.setFitToWidth(true);
-        scrollPane.setStyle("-fx-background: #1b1b2f; -fx-background-radius: 10;");
+        scrollPane.setStyle(
+                "-fx-background: #1b1b2f; -fx-background-radius: 10;"
+        );
 
-        computerArea.getChildren().addAll(compLabel, computerTextFlow, computerProgress, computerScoreLabel, scrollPane);
+        computerArea.getChildren().addAll(
+                compLabel,
+                computerTextFlow,
+                computerProgress,
+                computerScoreLabel,
+                scrollPane
+        );
 
         center.getChildren().addAll(playerArea, computerArea);
+
+        // Let both columns grow, but never shrink below 600 px
+        HBox.setHgrow(playerArea, Priority.ALWAYS);
+        HBox.setHgrow(computerArea, Priority.ALWAYS);
+
+        playerArea.prefWidthProperty().bind(columnWidth);
+        playerArea.maxWidthProperty().bind(columnWidth);
+        computerArea.prefWidthProperty().bind(columnWidth);
+        computerArea.maxWidthProperty().bind(columnWidth);
+
+        // Inner content tracks the column width
+        targetTextFlow.maxWidthProperty().bind(columnWidth);
+        playerProgress.maxWidthProperty().bind(columnWidth);
+        computerTextFlow.maxWidthProperty().bind(columnWidth);
+        computerProgress.maxWidthProperty().bind(columnWidth);
+
         rootPane.setCenter(center);
     }
 
@@ -122,9 +162,13 @@ public class UIComponents {
         HBox bottom = new HBox();
         bottom.setAlignment(Pos.CENTER);
         bottom.setPadding(new Insets(10));
-        Label instructions = new Label("Type the text above. Correct letters = green, wrong letters = red. Watch the computer type!");
+
+        Label instructions = new Label(
+                "Type the text above. Correct letters = green, wrong letters = red. Watch the computer type!"
+        );
         instructions.setFont(Font.font("Consolas", 14));
         instructions.setTextFill(Color.WHITE);
+
         bottom.getChildren().add(instructions);
         rootPane.setBottom(bottom);
     }
