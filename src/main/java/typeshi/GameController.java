@@ -32,7 +32,6 @@ import java.util.concurrent.TimeUnit;
  * - Multiplayer: does NOT run ComputerOpponent; instead, sends PROGRESS/FINISHED and updates
  *   the "computer" side UI from incoming network messages (via updateComputerProgress + onComputerFinished).
  */
-
 public class GameController {
 
     private final UIComponents ui;
@@ -57,7 +56,6 @@ public class GameController {
     private MultiplayerServer mpServer;
     private MultiplayerClient mpClient;
 
-    private int playerCumulativeErrors = 0;
     private int lastOpponentPosition = 0;
     private int lastOpponentErrors = 0;
 
@@ -282,8 +280,6 @@ public class GameController {
         playerPassage = getOrCreatePassageAt(playerPassageIndex);
         fadeIndex = 0;
 
-        playerCumulativeErrors = 0;
-
         ui.targetTextFlow.getChildren().clear();
         for (char c : playerPassage.toCharArray()) {
             Text t = new Text(String.valueOf(c));
@@ -414,37 +410,14 @@ public class GameController {
         }
         lastCorrectCount = correctCount;
 
-        cappedLen = Math.min(typedRaw.length(), children.size());
-
-// Determine the number of newly typed letters
-        int prevTypedLen = lastCorrectCount; // track last correct prefix length
-        int typedLen = typed.length();
-        int newErrors = 0;
-
-// Only check new characters that were just typed
-        for (int i = prevTypedLen; i < typedLen; i++) {
-            if (i >= playerPassage.length()) break; // safety
-            char typedChar = typed.charAt(i);
-            char targetChar = playerPassage.charAt(i);
-
-            if (typedChar != targetChar) {
-                newErrors++;
-                // Mark this character RED immediately in TextFlow
-                Text t = (Text) children.get(i);
-                t.setFill(Color.RED);
-            }
-        }
-
-// Increment cumulative errors only by the newly typed wrong letters
-        playerCumulativeErrors += newErrors;
-        scoreManager.setPlayerErrors(playerCumulativeErrors);
-
+        int errors = Math.max(0, cappedLen - correctCount); // errors in this passage
+        scoreManager.setPlayerErrors(errors);
         scoreManager.setPlayerProgress(progress);
         ui.playerScoreLabel.setText(scoreManager.playerSummary());
 
         // MULTIPLAYER: send progress to remote on every change
         if (multiplayer && networkOpponent != null) {
-            networkOpponent.sendProgress(correctCount, newErrors);
+            networkOpponent.sendProgress(correctCount, errors);
         }
 
         // MEDIUM & HARD: Auto-backspace after completing a correct word (ONCE per position only)
@@ -616,9 +589,6 @@ public class GameController {
         });
     }
 
-    /**
-     * Multiplayer-only: update opponent UI + scoring from absolute position/errors sent over network.
-     */
     private void updateOpponentFromNetwork(int position, int errors) {
         if (ui == null) return;
 
@@ -925,178 +895,15 @@ public class GameController {
         running = false;
 
         if (backgroundPool != null) backgroundPool.shutdownNow();
-
-        // stop network loop if any
-        try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
-
-        int playerScore = scoreManager.getPlayerScore();
-        int computerScore = scoreManager.getComputerScore();
-        int playerErrors = scoreManager.getPlayerErrors();
-        int computerErrors = scoreManager.getComputerErrors();
-
         Platform.runLater(() -> {
-            hidePauseOverlay();
-            if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
-
-            VictoryScreen victory = new VictoryScreen(
-                    playerScore,
-                    computerScore,
-                    playerErrors,
-                    computerErrors,
-                    onReturnToMenu,
-                    multiplayer
+            ui.logBox.getChildren().add(
+                    new Label("Time's up! Round finished.")
             );
-
-            ui.rootPane.getScene().setRoot(victory.getRoot());
+            ui.logBox.getChildren().add(
+                    new Label("Player: " + playerFinishedCount + " passages | Computer: " + computerFinishedCount + " passages")
+            );
         });
     }
-
-    // -------------------- MULTIPLAYER SYNC HELPERS --------------------
-    private void setPassageFromNetwork(String passage) {
-        // reset shared sequence to exactly this one passage
-        passageSequence.clear();
-        passageSequence.add(passage);
-
-        playerPassageIndex = 0;
-        computerPassageIndex = 0;
-
-        playerPassage = passage;
-        computerPassage = passage;
-
-        fadeIndex = 0;
-        computerPassageDone = false;
-
-        ui.targetTextFlow.getChildren().clear();
-        for (char c : playerPassage.toCharArray()) {
-            Text t = new Text(String.valueOf(c));
-            t.setFill(Color.WHITE);
-            t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
-            ui.targetTextFlow.getChildren().add(t);
-        }
-
-        ui.computerTextFlow.getChildren().clear();
-        for (char c : computerPassage.toCharArray()) {
-            Text t = new Text(String.valueOf(c));
-            t.setFill(Color.GRAY);
-            t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
-            ui.computerTextFlow.getChildren().add(t);
-        }
-
-        ui.inputField.clear();
-        ui.playerProgress.setProgress(0);
-        ui.computerProgress.setProgress(0);
-
-        lastCorrectCount = 0;
-        lastOpponentPosition = 0;
-        lastOpponentErrors = 0;
-    }
-
-    public void startHostMultiplayer(int port, int roundSeconds, int difficulty, int mode) {
-        multiplayer = true;
-        isHost = true;
-
-        multiplayerPort = port;
-        multiplayerRoundSeconds = roundSeconds;
-        currentDifficulty = difficulty;
-        this.mode = mode;
-
-        // Show lobby immediately
-        Platform.runLater(() -> prepareMultiplayerLobbyUI("Waiting for opponent..."));
-        Platform.runLater(() -> ui.logBox.getChildren().add(new Label("Hosting on port " + multiplayerPort)));
-
-        new Thread(() -> {
-            try {
-                // blocks on accept()
-                mpServer = new MultiplayerServer(multiplayerPort);
-                Platform.runLater(() -> ui.logBox.getChildren().add(new Label("Client connected!")));
-
-                // NEW: generate a fresh passage when both are connected
-                String text = wordGenerator.getRandomPassage();
-
-                // apply it locally (host UI)
-                Platform.runLater(() -> setPassageFromNetwork(text));
-
-                // send to client
-                mpServer.send("TEXT:" + text);
-
-                // Send config: seconds, difficulty, mode
-                mpServer.send("CFG:" + multiplayerRoundSeconds + ":" + currentDifficulty + ":" + this.mode);
-
-                // Start receiver loop for opponent updates
-                networkOpponent = new NetworkOpponent(this, mpServer, null, true);
-                new Thread(networkOpponent).start();
-
-                // Now start
-                mpServer.send("START");
-
-                Platform.runLater(() -> {
-                    ui.inputField.setDisable(false);
-                    ui.inputField.requestFocus();
-                    startGameWithCountdown(multiplayerRoundSeconds, currentDifficulty);
-                });
-
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                Platform.runLater(() -> ui.bottomInstructionLabel.setText("Host error: " + e.getMessage()));
-            }
-        }).start();
-    }
-
-    public void startJoinMultiplayer(String ip, int port) {
-        multiplayer = true;
-        isHost = false;
-
-        multiplayerPort = port;
-
-        Platform.runLater(() -> prepareMultiplayerLobbyUI("Connecting to host..."));
-
-        new Thread(() -> {
-            try {
-                mpClient = new MultiplayerClient(ip, multiplayerPort);
-
-                // Optional handshake
-                try { mpClient.send("READY"); } catch (Exception ignored) {}
-
-                // Read TEXT + CFG + START here (single reader thread).
-                while (true) {
-                    String msg = mpClient.receive();
-                    if (msg == null) throw new RuntimeException("Disconnected");
-
-                    if (msg.startsWith("TEXT:")) {
-                        String text = msg.substring(5);
-                        Platform.runLater(() -> setPassageFromNetwork(text));
-
-                    } else if (msg.startsWith("CFG:")) {
-                        // CFG:seconds:difficulty:mode
-                        String[] p = msg.split(":");
-                        multiplayerRoundSeconds = Integer.parseInt(p[1]);
-                        currentDifficulty = Integer.parseInt(p[2]);
-                        this.mode = Integer.parseInt(p[3]);
-
-                    } else if (msg.equals("START")) {
-                        break;
-                    }
-                }
-
-                // Start receiver loop for opponent updates
-                networkOpponent = new NetworkOpponent(this, null, mpClient, false);
-                new Thread(networkOpponent).start();
-
-                Platform.runLater(() -> {
-                    ui.inputField.setDisable(false);
-                    ui.inputField.requestFocus();
-                    startGameWithCountdown(multiplayerRoundSeconds, currentDifficulty);
-                });
-
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                Platform.runLater(() -> ui.bottomInstructionLabel.setText("Join failed: " + e.getMessage()));
-            }
-        }).start();
-    }
-
 
     private String getCurrentPassage() {
         return playerPassage;
