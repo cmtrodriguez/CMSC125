@@ -3,12 +3,10 @@ package typeshi;
 import java.util.Random;
 
 /**
- * Computer opponent that advances through a passage over time.
+ * Computer opponent that advances through a passage over time
  *
- * This implementation is non-blocking: it uses tick-based updates (the
- * existing ScheduledExecutorService calls run periodically), and the AI
- * decides whether to produce a character based on elapsed time and a
- * configurable delay distribution. This avoids Thread.sleep() inside run().
+ * This implementation is non-blocking: it uses tick-based updates (the existing ScheduledExecutorService calls run periodically) and the AI decides whether to produce a character based on elapsed time and a configurable delay distribution
+ * This avoids Thread.sleep() inside run
  */
 public class ComputerOpponent implements Runnable {
 
@@ -21,13 +19,13 @@ public class ComputerOpponent implements Runnable {
     private volatile boolean running = true;
     private final Random random;
 
-    // timing state (nanos)
+    // Timing state in nanoseconds
     private long lastTickNanos = 0;
     private long remainingDelayNanos = 0;
 
     /**
-     * Backwards-compatible constructor keeping the old signature.
-     * Legacy integer difficulty is mapped to a {@link ComputerOpponentConfig}.
+     * Backwards compatible constructor preserving the old signature
+     * Legacy integer difficulty is mapped to a {@link ComputerOpponentConfig}
      */
     public ComputerOpponent(String passage, GameController controller, int difficulty) {
         this(passage, controller, ComputerOpponentConfig.fromLegacyDifficulty(difficulty), new Random());
@@ -35,14 +33,14 @@ public class ComputerOpponent implements Runnable {
 
     /**
      * Primary constructor with explicit configuration and seedable Random
-     * (useful for deterministic unit tests).
+     * Useful for deterministic unit tests
      */
     public ComputerOpponent(String passage, GameController controller, ComputerOpponentConfig config, Random random) {
         this.passage = passage;
         this.controller = controller;
         this.config = config;
         this.random = random == null ? new Random() : random;
-        // sample initial delay
+        // Sample initial delay
         this.remainingDelayNanos = sampleNextDelayNanos();
     }
 
@@ -57,20 +55,19 @@ public class ComputerOpponent implements Runnable {
 
         remainingDelayNanos -= elapsed;
 
-        // If enough time has passed, emit one or more keystrokes (catch-up)
+        // Emit one or more keystrokes if enough time has passed to catch up
         while (running && remainingDelayNanos <= 0) {
-            // perform a typing step
             advanceOneChar();
-            if (!running) return; // might have finished
+            if (!running) return;
 
-            // schedule next delay (allow multiple steps in tight elapsed)
+            // Schedule next delay and allow multiple steps to catch up
             remainingDelayNanos += sampleNextDelayNanos();
         }
     }
 
     private void advanceOneChar() {
         if (position >= passage.length()) {
-            // already finished
+            // Return if already at end of passage
             return;
         }
 
@@ -81,11 +78,10 @@ public class ComputerOpponent implements Runnable {
 
         position++;
 
-        // Notify controller (GameController wraps UI updates with Platform.runLater())
-        // Provide whether the last typed char was correct so the UI can highlight errors
+        // Notify controller and indicate whether last typed char was correct; GameController updates UI on the JavaFX thread
         controller.updateComputerTyping(position, errors, !makeError);
 
-        // If finished, notify controller exactly once
+        // If finished, notify controller once
         if (position >= passage.length()) {
             running = false;
             controller.onComputerFinished();
@@ -95,7 +91,7 @@ public class ComputerOpponent implements Runnable {
     private long sampleNextDelayNanos() {
         double mean = config.getMeanDelayMs();
         double jitter = config.getJitterMs();
-        // sample from normal around mean with given jitter (clamp to min 20ms)
+        // Sample from normal distribution around mean with provided jitter and clamp to minimum 20 ms
         double val = mean + (random.nextGaussian() * (jitter / 2.0));
         double ms = Math.max(20.0, val);
         return (long) (ms * 1_000_000L);
@@ -105,7 +101,7 @@ public class ComputerOpponent implements Runnable {
         running = false;
     }
 
-    // testing helpers
+    // Testing helper methods
     int getPosition() { return position; }
     int getErrors() { return errors; }
     boolean isRunning() { return running; }

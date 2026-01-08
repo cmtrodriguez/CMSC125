@@ -27,7 +27,7 @@ public class MultiplayerClient {
             try {
                 String line;
                 while ((line = in.readLine()) != null) {
-                    onMessage.accept(line); // pass message to handler
+                    onMessage.accept(line); // Pass message to handler
                 }
             } catch (IOException e) {
                 e.printStackTrace();

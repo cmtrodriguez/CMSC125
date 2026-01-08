@@ -11,7 +11,7 @@ public class HomeScreen {
 
     private StackPane root;
     private Button playButton;
-    private Button multiplayerButton;     // NEW
+    private Button multiplayerButton;
     private Button settingsButton;
     private Button exitButton;
     private Button instructionsButton;
@@ -40,12 +40,11 @@ public class HomeScreen {
 
         playButton = createButton("Play vs Computer");
 
-        // NEW
         multiplayerButton = createButton("Multiplayer");
 
         instructionsButton = createButton("Instructions");
         instructionsButton.setOnAction(e -> {
-            // wired in Main
+            // Wired in Main
         });
 
         settingsButton = createButton("Settings");
@@ -74,7 +73,7 @@ public class HomeScreen {
         menuBox.getChildren().addAll(
                 title,
                 playButton,
-                multiplayerButton,   // NEW
+                multiplayerButton,
                 instructionsButton,
                 settingsButton,
                 exitButton
@@ -110,7 +109,7 @@ public class HomeScreen {
 
     public StackPane getRoot() { return root; }
     public Button getPlayButton() { return playButton; }
-    public Button getMultiplayerButton() { return multiplayerButton; } // NEW
+    public Button getMultiplayerButton() { return multiplayerButton; }
     public Button getSettingsButton() { return settingsButton; }
     public Button getExitButton() { return exitButton; }
     public Button getInstructionsButton() { return instructionsButton; }
