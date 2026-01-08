@@ -140,3 +140,30 @@
     -fx-underline: true;
 }
 
+/* Container for difficulty options - add this class to the VBox/HBox holding the levels */
+.difficulty-container {
+	-fx-spacing: 12; /* space between items */
+	-fx-padding: 8;
+}
+
+/* Each difficulty row */
+.difficulty-box {
+	-fx-background-color: linear-gradient(to right, #1f1f1f, #2b2b2b);
+	-fx-background-radius: 8;
+	-fx-border-radius: 8;
+	-fx-border-color: rgba(255,255,255,0.08);
+	-fx-border-width: 1;
+	-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 8, 0, 0, 3);
+	-fx-padding: 10 14 10 14;
+	-fx-alignment: center-left;
+	/* Keep typography consistent with buttons */
+	-fx-font-family: Consolas;
+	-fx-font-size: 15;
+	-fx-text-fill: white;
+}
+
+/* Label inside difficulty box */
+.difficulty-box .label {
+	-fx-text-fill: white;
+}
+

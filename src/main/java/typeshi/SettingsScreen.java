@@ -19,6 +19,9 @@ public class SettingsScreen {
 
     private final StackPane root = new StackPane();
 
+    private javafx.scene.control.ChoiceBox<String> defaultDifficultyChoice;
+    private Button backButton;
+
     public SettingsScreen(Runnable onBack) {
         root.setStyle("-fx-background-color: linear-gradient(to bottom right, #141E30, #243B55);");
 
@@ -78,10 +81,12 @@ public class SettingsScreen {
         // Difficulty (stacked)
         Label diffLabel = new Label("Default Difficulty");
         diffLabel.getStyleClass().add("subtle");
-        ChoiceBox<String> difficultyChoice = new ChoiceBox<>();
-        difficultyChoice.getItems().addAll("Easy", "Medium", "Hard");
-        difficultyChoice.setValue("Medium");
-        difficultyChoice.setMaxWidth(Double.MAX_VALUE);
+        defaultDifficultyChoice = new javafx.scene.control.ChoiceBox<>();
+        defaultDifficultyChoice.getItems().addAll("Easy", "Medium", "Hard");
+        defaultDifficultyChoice.setValue("Medium");
+        defaultDifficultyChoice.setMaxWidth(Double.MAX_VALUE);
+        // Ensure readability on light backgrounds
+        defaultDifficultyChoice.setStyle("-fx-background-color: #2b2b2b; -fx-text-fill: white;");
 
         // Footer buttons
         HBox footer = new HBox(10);
@@ -94,7 +99,7 @@ public class SettingsScreen {
             volumeSlider.setValue(70);
             musicCheck.setSelected(true);
             sfxCheck.setSelected(true);
-            difficultyChoice.setValue("Medium");
+            defaultDifficultyChoice.setValue("Medium");
         });
 
         Button save = new Button("Save");
@@ -103,16 +108,16 @@ public class SettingsScreen {
             // TODO: persist settings (future work)
         });
 
-        Button back = new Button("Back");
-        back.setDefaultButton(false);
-        back.getStyleClass().addAll("button");
-        back.setOnAction(e -> {
+        backButton = new Button("Back");
+        backButton.setDefaultButton(false);
+        backButton.getStyleClass().addAll("button", "danger");
+        backButton.setOnAction(e -> {
             if (onBack != null) onBack.run();
         });
 
-        footer.getChildren().addAll(reset, save, back);
+        footer.getChildren().addAll(reset, save, backButton);
 
-        content.getChildren().addAll(volumeLabel, volumeSlider, volValRow, audioLabel, toggles, diffLabel, difficultyChoice);
+        content.getChildren().addAll(volumeLabel, volumeSlider, volValRow, audioLabel, toggles, diffLabel, defaultDifficultyChoice);
         card.getChildren().addAll(title, subtitle, sep, content, footer);
         outer.getChildren().add(card);
         root.getChildren().add(outer);

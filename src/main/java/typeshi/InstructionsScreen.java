@@ -8,6 +8,7 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
+import javafx.scene.text.Text;
 
 /**
  * Simple instructions/help screen.
@@ -27,32 +28,34 @@ public class InstructionsScreen {
         card.getStyleClass().add("card");
         card.setMaxWidth(720);
 
-        Label title = new Label("How to Play");
-        title.getStyleClass().add("panel-title");
+        Label title = new Label("Instructions");
+        title.setStyle("-fx-text-fill: white; -fx-font-family: Consolas; -fx-font-size: 22;");
 
-        Label p1 = new Label("• Type the text shown in the left pane as accurately and quickly as possible.");
-        p1.getStyleClass().addAll("subtle");
-        p1.setWrapText(true);
-        Label p2 = new Label("• Correct letters turn green; incorrect letters turn red.");
-        p2.getStyleClass().addAll("subtle");
-        p2.setWrapText(true);
-        Label p3 = new Label("• The computer opponent types in real time; aim to type more accurate characters than the computer.");
-        p3.getStyleClass().addAll("subtle");
-        p3.setWrapText(true);
-        Label p4 = new Label("• Use the settings to control volume and default difficulty.");
-        p4.getStyleClass().addAll("subtle");
-        p4.setWrapText(true);
-        Label p5 = new Label("• Press Back to return to the main menu.");
-        p5.getStyleClass().addAll("subtle");
+        Text body = new Text(
+                "Overview:\n" +
+                "- Type the given passage as quickly and accurately as you can.\n" +
+                "- Score is awarded for each correct character; errors are counted separately.\n\n" +
+                "Per-difficulty features:\n" +
+                "Easy: Immediate feedback (wrong chars turn red) and no auto-backspace.\n" +
+                "Medium: Mistakes are delayed (briefly shown white then turn red) and correctly typed words auto-backspace once.\n" +
+                "Hard: Words progressively fade (hidden) and mistakes cause a brief screen shake; delayed feedback and auto-backspace apply.\n\n" +
+                "Multiplayer:\n" +
+                "- Host chooses passage, round length, difficulty, and rounds. Joiner syncs to host.\n\n" +
+                "Rounds & Pause:\n" +
+                "- You can set number of rounds; between rounds a short 'Round X Done' message appears, then a 3-2-1 countdown.\n" +
+                "- Pause works at any time (including during countdowns)."
+        );
+        body.setFill(javafx.scene.paint.Color.WHITE);
+        body.setFont(Font.font("Consolas", 13));
+        body.setWrappingWidth(720);
 
         Button back = new Button("Back");
-        back.setDefaultButton(false);
         back.getStyleClass().addAll("button", "primary");
         back.setOnAction(e -> {
             if (onBack != null) onBack.run();
         });
 
-        card.getChildren().addAll(title, p1, p2, p3, p4, p5, back);
+        card.getChildren().addAll(title, body, back);
         box.getChildren().add(card);
         root.getChildren().add(box);
     }

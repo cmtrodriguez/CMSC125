@@ -2,6 +2,7 @@ package typeshi;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
+import javafx.animation.PauseTransition;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
@@ -10,6 +11,8 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+import javafx.scene.layout.HBox;
+import javafx.scene.Node;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.text.Font;
@@ -24,13 +27,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * GameController
- * - Singleplayer: runs ComputerOpponent on a scheduler (your existing logic).
- * - Multiplayer: does NOT run ComputerOpponent; instead, sends PROGRESS/FINISHED and updates
- *   the "computer" side UI from incoming network messages (via updateComputerProgress + onComputerFinished).
+ * game controller - singleplayer & multiplayer logic
  */
 
 public class GameController {
@@ -74,6 +75,12 @@ public class GameController {
     // For HARD fading (player side)
     private int fadeIndex = 0;
 
+    // NEW: separate fade index for computer side
+    private int computerFadeIndex = 0;
+
+    // NEW: handle the scheduled HARD fade task so we can cancel/reschedule it
+    private ScheduledFuture<?> hardFadeFuture = null;
+
     // Guard flag so programmatic text changes do not recurse badly
     private boolean adjustingInput = false;
 
@@ -98,6 +105,17 @@ public class GameController {
 
     private Runnable onReturnToMenu = null;
 
+    // rounds support
+    private int totalRounds = 1;
+    private int currentRound = 1;
+    // UI controls placed near pause button
+    private Label roundLabelNode = null;
+    private Button backToHomeButton = null;
+
+    // countdown state so Pause works even while the 3-2-1 overlay runs
+    private boolean countdownActive = false;
+    private Timeline countdownTimeline = null;
+
     public GameController(UIComponents ui) {
         this.ui = ui;
         this.wordGenerator = new WordGenerator();
@@ -117,16 +135,26 @@ public class GameController {
         this.onReturnToMenu = onReturnToMenu;
     }
 
+    public void setTotalRounds(int total) {
+        this.totalRounds = Math.max(1, total);
+        this.currentRound = 1;
+        // update visible label if already present
+        if (roundLabelNode != null) {
+            Platform.runLater(() -> roundLabelNode.setText("Round " + currentRound + " / " + totalRounds));
+        }
+    }
+
     private void setupGameUI() {
+        // listen for typing
         ui.inputField.textProperty().addListener((obs, oldVal, newVal) -> onPlayerType());
 
-        // Prevent Enter key from activating unrelated default buttons: consume the TextField action
+        // consume enter
         ui.inputField.setOnAction(e -> {
             e.consume();
             onPlayerType();
         });
 
-        // reset shared sequence for this round
+        // reset passages
         passageSequence.clear();
         playerPassageIndex = 0;
         computerPassageIndex = 0;
@@ -136,6 +164,7 @@ public class GameController {
         computerPassage = first;
 
         fadeIndex = 0;
+        computerFadeIndex = 0;
         computerPassageDone = false;
 
         // build player TextFlow
@@ -147,7 +176,7 @@ public class GameController {
             ui.targetTextFlow.getChildren().add(t);
         }
 
-        // build "computer" TextFlow
+        // build computer TextFlow
         ui.computerTextFlow.getChildren().clear();
         for (char c : computerPassage.toCharArray()) {
             Text t = new Text(String.valueOf(c));
@@ -164,11 +193,27 @@ public class GameController {
         lastOpponentPosition = 0;
         lastOpponentErrors = 0;
 
-        // prepare pause control
+        // prepare pause button + round label
         if (ui.pauseButton != null) {
             ui.pauseButton.setDisable(false);
             ui.pauseButton.setVisible(true);
             ui.pauseButton.setOnAction(e -> togglePause());
+
+            // Attempt to insert round label and back button into the same HBox as pauseButton
+            Node parent = ui.pauseButton.getParent();
+            if (parent instanceof HBox) {
+                HBox topBox = (HBox) parent;
+
+                if (roundLabelNode == null) {
+                    roundLabelNode = new Label("Round " + currentRound + " / " + totalRounds);
+                    roundLabelNode.setStyle("-fx-text-fill: white; -fx-font-family: Consolas;");
+                }
+                if (!topBox.getChildren().contains(roundLabelNode)) {
+                    topBox.getChildren().add(topBox.getChildren().indexOf(ui.pauseButton), roundLabelNode);
+                }
+
+                // (removed side "back" button - handled via pause modal controls)
+            }
         }
     }
 
@@ -183,10 +228,17 @@ public class GameController {
     // -------------------- GAME START WITH COUNTDOWN --------------------
     // Call this from Main instead of startGame(...)
     public void startGameWithCountdown(int durationSeconds, int difficulty) {
-        // remember duration so we can restart later
+        // remember duration
         this.initialDurationSeconds = durationSeconds;
 
-        // block typing during countdown
+        // update round label
+        if (roundLabelNode != null) {
+            Platform.runLater(() -> roundLabelNode.setText("Round " + currentRound + " / " + totalRounds));
+        }
+
+        countdownActive = true;
+
+        // block typing
         ui.inputField.setDisable(true);
 
         // remember existing center content (player/computer HBox)
@@ -210,7 +262,12 @@ public class GameController {
         // temporarily replace center with stacked version
         ui.rootPane.setCenter(centerStack);
 
-        Timeline timeline = new Timeline(
+        // Use field so pause can stop the countdown
+        if (countdownTimeline != null) {
+            countdownTimeline.stop();
+            countdownTimeline = null;
+        }
+        countdownTimeline = new Timeline(
                 new KeyFrame(Duration.seconds(0), e -> countdownText.setText("3")),
                 new KeyFrame(Duration.seconds(1), e -> countdownText.setText("2")),
                 new KeyFrame(Duration.seconds(2), e -> countdownText.setText("1")),
@@ -220,10 +277,42 @@ public class GameController {
                     ui.rootPane.setCenter(originalCenter);
                     ui.inputField.setDisable(false);
                     ui.inputField.requestFocus();
+                    countdownActive = false;
                     startGame(durationSeconds, difficulty);
                 })
         );
-        timeline.play();
+        countdownTimeline.play();
+    }
+
+    // New helper: show "Round X Done. Next Round!" briefly between rounds
+    private void showRoundDoneOverlay(Runnable onFinished) {
+        if (ui == null || ui.rootPane == null) { onFinished.run(); return; }
+
+        javafx.scene.Node originalCenter = ui.rootPane.getCenter();
+
+        Rectangle dim = new Rectangle();
+        Label text = new Label("Round " + (currentRound - 1) + " Done.  Next Round!");
+        text.setTextFill(Color.WHITE);
+        text.setFont(Font.font("Consolas", 36));
+
+        StackPane overlay = new StackPane(dim, text);
+        overlay.setAlignment(Pos.CENTER);
+        dim.widthProperty().bind(overlay.widthProperty());
+        dim.heightProperty().bind(overlay.heightProperty());
+        dim.setFill(new Color(0, 0, 0, 0.35));
+
+        StackPane centerStack = new StackPane(originalCenter, overlay);
+        ui.rootPane.setCenter(centerStack);
+
+        countdownActive = true;
+        PauseTransition pause = new PauseTransition(Duration.seconds(1.5));
+        pause.setOnFinished(e -> {
+            // remove overlay and continue to countdown for next round
+            ui.rootPane.setCenter(originalCenter);
+            countdownActive = false;
+            onFinished.run();
+        });
+        pause.play();
     }
 
     // -------------------- START GAME (TIMER + AI/NETWORK) --------------------
@@ -234,7 +323,9 @@ public class GameController {
         remainingSeconds = durationSeconds;
         currentDifficulty = difficulty;
 
-        scoreManager.reset();
+        // reset scores at match start only
+        if (currentRound == 1) scoreManager.reset();
+
         playerFinishedCount = 0;
         computerFinishedCount = 0;
         lastCorrectCount = 0;
@@ -266,11 +357,18 @@ public class GameController {
             if (remainingSeconds <= 0) endGame();
         }, 1, 1, TimeUnit.SECONDS);
 
-        // HARD: fade words at a fixed interval
+        // HARD: fade words at a fixed interval (both player AND computer)
         if (mode == 3) {
             fadeIndex = 0;
-            backgroundPool.scheduleAtFixedRate(
-                    () -> { if (!paused) Platform.runLater(this::fadeNextWord); },
+            computerFadeIndex = 0;
+            // cancel previously-scheduled hard fade (if any)
+            if (hardFadeFuture != null) {
+                hardFadeFuture.cancel(false);
+                hardFadeFuture = null;
+            }
+            // start with a short grace so the first passage is visible (no immediate fading)
+            hardFadeFuture = backgroundPool.scheduleAtFixedRate(
+                    () -> { if (!paused) Platform.runLater(() -> { fadeNextWord(); fadeNextComputerWord(); }); },
                     3, 3, TimeUnit.SECONDS
             );
         }
@@ -294,38 +392,31 @@ public class GameController {
 
         ui.inputField.clear();
         ui.playerProgress.setProgress(0);
+
         lastCorrectCount = 0;
+        // If HARD mode: ensure subsequent passages start fading immediately after first completion
+        // (playerFinishedCount is incremented before this method is called)
+        if (mode == 3 && playerFinishedCount >= 1 && backgroundPool != null) {
+            // Cancel any delayed starter and schedule an immediate repeating fade
+            if (hardFadeFuture != null) {
+                hardFadeFuture.cancel(false);
+            }
+            hardFadeFuture = backgroundPool.scheduleAtFixedRate(
+                    () -> { if (!paused) Platform.runLater(() -> { fadeNextWord(); fadeNextComputerWord(); }); },
+                    0, 3, TimeUnit.SECONDS
+            );
+            // Apply one immediate fade step so effects are visible right away
+            Platform.runLater(() -> { fadeNextWord(); fadeNextComputerWord(); });
+        }
     }
-
-    public void prepareMultiplayerLobbyUI(String statusText) {
-        if (ui == null) return;
-
-        // change labels (requires UIComponents fields; see Fix 2)
-        if (ui.opponentTitleLabel != null) ui.opponentTitleLabel.setText("Player");
-        if (ui.bottomInstructionLabel != null) ui.bottomInstructionLabel.setText(statusText);
-
-        ui.inputField.clear();
-        ui.inputField.setDisable(true);
-
-        ui.targetTextFlow.getChildren().clear();
-        ui.computerTextFlow.getChildren().clear();
-
-        ui.playerProgress.setProgress(0);
-        ui.computerProgress.setProgress(0);
-
-        ui.timerLabel.setText("00:00");
-        ui.playerScoreLabel.setText("Score: 0 | Errors: 0");
-        ui.computerScoreLabel.setText("Score: 0 | Errors: 0");
-
-        ui.logBox.getChildren().clear();
-    }
-
 
     // -------------------- START NEW PASSAGE (COMPUTER ONLY) --------------------
     private void startComputerPassage() {
         computerPassageIndex++; // AI moves ahead in shared sequence
         computerPassage = getOrCreatePassageAt(computerPassageIndex);
         computerPassageDone = false;
+
+        computerFadeIndex = 0;
 
         ui.computerTextFlow.getChildren().clear();
         for (char c : computerPassage.toCharArray()) {
@@ -336,11 +427,13 @@ public class GameController {
         }
 
         ui.computerProgress.setProgress(0);
+
+        // Do not force immediate fade here; fading is scheduled by startGame or when a passage has been completed.
     }
 
     // -------------------- PLAYER INPUT --------------------
     private void onPlayerType() {
-        // ignore while not running or while we are programmatically changing text
+        // ignore when not running or adjusting
         if (!running || adjustingInput) return;
 
         String typedRaw = ui.inputField.getText();
@@ -408,7 +501,8 @@ public class GameController {
         ui.playerProgress.setProgress(progress);
 
         // how many *new* correct chars since last keystroke
-        int deltaCorrect = correctCount - lastCorrectCount;
+        int prevCorrectCount = lastCorrectCount;
+        int deltaCorrect = correctCount - prevCorrectCount;
         if (deltaCorrect > 0) {
             scoreManager.awardPlayer(deltaCorrect);
         }
@@ -416,12 +510,12 @@ public class GameController {
 
         cappedLen = Math.min(typedRaw.length(), children.size());
 
-// Determine the number of newly typed letters
-        int prevTypedLen = lastCorrectCount; // track last correct prefix length
+        // Determine the number of newly typed letters
+        int prevTypedLen = prevCorrectCount; // track last correct prefix length (use previous value)
         int typedLen = typed.length();
         int newErrors = 0;
 
-// Only check new characters that were just typed
+        // Only check new characters that were just typed
         for (int i = prevTypedLen; i < typedLen; i++) {
             if (i >= playerPassage.length()) break; // safety
             char typedChar = typed.charAt(i);
@@ -435,7 +529,7 @@ public class GameController {
             }
         }
 
-// Increment cumulative errors only by the newly typed wrong letters
+        // Increment cumulative errors only by the newly typed wrong letters
         playerCumulativeErrors += newErrors;
         scoreManager.setPlayerErrors(playerCumulativeErrors);
 
@@ -544,7 +638,7 @@ public class GameController {
         return true;
     }
 
-    // HARD: fade (hide) the next word from the targetTextFlow
+    // hard: fade (hide) the next word from the targetTextFlow
     private void fadeNextWord() {
         var children = ui.targetTextFlow.getChildren();
         if (children.isEmpty()) return;
@@ -561,6 +655,27 @@ public class GameController {
             t.setFill(Color.TRANSPARENT);
             char ch = t.getText().charAt(0);
             fadeIndex++;
+            if (ch == ' ') break;
+        }
+    }
+
+    // hard: fade next computer word
+    private void fadeNextComputerWord() {
+        var children = ui.computerTextFlow.getChildren();
+        if (children.isEmpty()) return;
+
+        while (computerFadeIndex < children.size()) {
+            Text t = (Text) children.get(computerFadeIndex);
+            if (!t.getFill().equals(Color.TRANSPARENT)) break;
+            computerFadeIndex++;
+        }
+        if (computerFadeIndex >= children.size()) return;
+
+        while (computerFadeIndex < children.size()) {
+            Text t = (Text) children.get(computerFadeIndex);
+            t.setFill(Color.TRANSPARENT);
+            char ch = t.getText().charAt(0);
+            computerFadeIndex++;
             if (ch == ' ') break;
         }
     }
@@ -596,11 +711,18 @@ public class GameController {
 
             scoreManager.setComputerProgress(progress);
             scoreManager.setComputerErrors(errors);
-            if (lastWasCorrect) scoreManager.awardComputer(1);
+
+            // don't award if last character was hidden by HARD fading
+            boolean wasHidden = false;
+            if (position > 0 && position - 1 < total) {
+                Text lastChar = (Text) ui.computerTextFlow.getChildren().get(position - 1);
+                wasHidden = lastChar.getFill().equals(Color.TRANSPARENT);
+            }
+            if (lastWasCorrect && !wasHidden) scoreManager.awardComputer(1);
 
             ui.computerScoreLabel.setText(scoreManager.computerSummary());
 
-            // Update computer text coloring & caret (underline next char)
+            // update coloring + caret
             for (int i = 0; i < total; i++) {
                 Text t = (Text) ui.computerTextFlow.getChildren().get(i);
                 t.setUnderline(i == position);
@@ -608,7 +730,39 @@ public class GameController {
                 if (i < position - 1) {
                     t.setFill(Color.LIMEGREEN);
                 } else if (i == position - 1) {
-                    t.setFill(lastWasCorrect ? Color.LIMEGREEN : Color.RED);
+                    if (lastWasCorrect && !wasHidden) {
+                        t.setFill(Color.LIMEGREEN);
+                    } else {
+                        // medium/hard: delayed red feedback
+                        if (mode == 2 || mode == 3) {
+                            if (!t.getFill().equals(Color.TRANSPARENT)) {
+                                t.setFill(Color.WHITE);
+                                final int index = i;
+                                Timeline delay = new Timeline(new KeyFrame(Duration.millis(500), e -> {
+                                    if (index < ui.computerTextFlow.getChildren().size()) {
+                                        Text delayedText = (Text) ui.computerTextFlow.getChildren().get(index);
+                                        if (!delayedText.getFill().equals(Color.LIMEGREEN) &&
+                                                !delayedText.getFill().equals(Color.TRANSPARENT)) {
+                                            delayedText.setFill(Color.RED);
+                                        }
+                                    }
+                                }));
+                                delay.play();
+                            } else {
+                                // hidden char: indicate struggle in HARD
+                                if (mode == 3) shakeScreen();
+                            }
+                        } else {
+                            if (!t.getFill().equals(Color.TRANSPARENT)) {
+                                t.setFill(Color.RED);
+                            }
+                        }
+
+                        // hard: shake on mistakes or hitting hidden char
+                        if (mode == 3 && (!lastWasCorrect || wasHidden)) {
+                            shakeScreen();
+                        }
+                    }
                 } else {
                     t.setFill(Color.GRAY);
                 }
@@ -616,9 +770,6 @@ public class GameController {
         });
     }
 
-    /**
-     * Multiplayer-only: update opponent UI + scoring from absolute position/errors sent over network.
-     */
     private void updateOpponentFromNetwork(int position, int errors) {
         if (ui == null) return;
 
@@ -694,7 +845,7 @@ public class GameController {
 
     // -------------------- PAUSE / RESUME / RESTART --------------------
     private void togglePause() {
-        if (!running) return;
+        if (!running && !countdownActive && !multiplayer) return;
         if (paused) resumeGame();
         else pauseGame();
     }
@@ -704,6 +855,8 @@ public class GameController {
         if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("▶ Resume");
         Platform.runLater(this::showPauseOverlay);
         if (ui != null) ui.inputField.setDisable(true);
+        // Pause countdown (if active)
+        if (countdownActive && countdownTimeline != null) countdownTimeline.pause();
     }
 
     private void resumeGame() {
@@ -711,11 +864,11 @@ public class GameController {
         if (ui != null && ui.pauseButton != null) ui.pauseButton.setText("⏸ Pause");
         Platform.runLater(this::hidePauseOverlay);
         if (ui != null) ui.inputField.setDisable(false);
+        // Resume countdown (if active)
+        if (countdownActive && countdownTimeline != null) countdownTimeline.play();
     }
 
     private void restartRound() {
-        // Restarting mid-multiplayer without resync will desync both players.
-        // Safest behavior: return to menu.
         if (multiplayer) {
             returnToHomeFromPause();
             return;
@@ -725,6 +878,8 @@ public class GameController {
             backgroundPool.shutdownNow();
             backgroundPool = null;
         }
+        if (hardFadeFuture != null) { hardFadeFuture.cancel(false); hardFadeFuture = null; }
+
         running = false;
         paused = false;
 
@@ -739,6 +894,7 @@ public class GameController {
 
     private void returnToHomeFromPause() {
         if (backgroundPool != null) backgroundPool.shutdownNow();
+        if (hardFadeFuture != null) { hardFadeFuture.cancel(false); hardFadeFuture = null; }
         running = false;
         paused = false;
 
@@ -839,7 +995,11 @@ public class GameController {
         exit.setMaxWidth(Double.MAX_VALUE);
         exit.setPrefHeight(36);
         exit.setFont(Font.font("Consolas", 22));
-        exit.setOnAction(e -> System.exit(0));
+        exit.setOnAction(e -> {
+            // hide the pause modal and show a single confirmation dialog
+            try { if (modal != null) modal.hide(); } catch (Exception ignored) {}
+            showExitConfirm(modal);
+        });
         exit.setOnMouseEntered(e -> exit.setStyle(
                 "-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c);"
                         + " -fx-text-fill: white; -fx-background-radius: 10;"
@@ -849,7 +1009,12 @@ public class GameController {
                         + " -fx-text-fill: white; -fx-background-radius: 10;"
         ));
 
-        menu.getChildren().addAll(resume, restart, home, exit);
+        if (multiplayer) {
+            // in multiplayer: avoid duplicate "back to menu" — use restart ("back to menu") and don't show home
+            menu.getChildren().addAll(resume, restart, exit);
+        } else {
+            menu.getChildren().addAll(resume, restart, home, exit);
+        }
         modalRoot.getChildren().add(menu);
         StackPane.setAlignment(menu, Pos.CENTER);
 
@@ -925,6 +1090,7 @@ public class GameController {
         running = false;
 
         if (backgroundPool != null) backgroundPool.shutdownNow();
+        if (hardFadeFuture != null) { hardFadeFuture.cancel(false); hardFadeFuture = null; }
 
         // stop network loop if any
         try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
@@ -934,6 +1100,52 @@ public class GameController {
         int playerErrors = scoreManager.getPlayerErrors();
         int computerErrors = scoreManager.getComputerErrors();
 
+        // If singleplayer match has more rounds, start next round after a short "round done" overlay
+        if (!multiplayer && currentRound < totalRounds) {
+            currentRound++;
+            Platform.runLater(() -> {
+                hidePauseOverlay();
+                if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
+
+                // Prepare fresh passages for next round (preserve cumulative scores)
+                passageSequence.clear();
+                playerPassageIndex = 0;
+                computerPassageIndex = 0;
+                String first = getOrCreatePassageAt(0);
+                playerPassage = first;
+                computerPassage = first;
+                fadeIndex = 0;
+                computerFadeIndex = 0;
+                computerPassageDone = false;
+
+                ui.targetTextFlow.getChildren().clear();
+                for (char c : playerPassage.toCharArray()) {
+                    Text t = new Text(String.valueOf(c));
+                    t.setFill(Color.WHITE);
+                    t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
+                    ui.targetTextFlow.getChildren().add(t);
+                }
+                ui.computerTextFlow.getChildren().clear();
+                for (char c : computerPassage.toCharArray()) {
+                    Text t = new Text(String.valueOf(c));
+                    t.setFill(Color.GRAY);
+                    t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
+                    ui.computerTextFlow.getChildren().add(t);
+                }
+
+                ui.inputField.clear();
+                ui.playerProgress.setProgress(0);
+                ui.computerProgress.setProgress(0);
+                lastCorrectCount = 0;
+
+                // show a small "Round Done" overlay, then start next round countdown
+                ui.logBox.getChildren().add(new Label("Round " + (currentRound - 1) + " complete"));
+                showRoundDoneOverlay(() -> startGameWithCountdown(initialDurationSeconds, currentDifficulty));
+            });
+            return;
+        }
+
+        // else show final victory screen (existing behavior)
         Platform.runLater(() -> {
             hidePauseOverlay();
             if (ui != null && ui.pauseButton != null) ui.pauseButton.setDisable(true);
@@ -951,82 +1163,233 @@ public class GameController {
         });
     }
 
-    // -------------------- MULTIPLAYER SYNC HELPERS --------------------
-    private void setPassageFromNetwork(String passage) {
-        // reset shared sequence to exactly this one passage
-        passageSequence.clear();
-        passageSequence.add(passage);
+    // Ensure multiplayer lobby shows the back button in case parent HBox isn't found
+    public void prepareMultiplayerLobbyUI(String statusText) {
+        if (ui == null) return;
 
-        playerPassageIndex = 0;
-        computerPassageIndex = 0;
-
-        playerPassage = passage;
-        computerPassage = passage;
-
-        fadeIndex = 0;
-        computerPassageDone = false;
-
-        ui.targetTextFlow.getChildren().clear();
-        for (char c : playerPassage.toCharArray()) {
-            Text t = new Text(String.valueOf(c));
-            t.setFill(Color.WHITE);
-            t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
-            ui.targetTextFlow.getChildren().add(t);
-        }
-
-        ui.computerTextFlow.getChildren().clear();
-        for (char c : computerPassage.toCharArray()) {
-            Text t = new Text(String.valueOf(c));
-            t.setFill(Color.GRAY);
-            t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
-            ui.computerTextFlow.getChildren().add(t);
-        }
+        // change labels (requires UIComponents fields; see Fix 2)
+        if (ui.opponentTitleLabel != null) ui.opponentTitleLabel.setText("Player");
+        if (ui.bottomInstructionLabel != null) ui.bottomInstructionLabel.setText(statusText);
 
         ui.inputField.clear();
+        ui.inputField.setDisable(true);
+
+        ui.targetTextFlow.getChildren().clear();
+        ui.computerTextFlow.getChildren().clear();
+
         ui.playerProgress.setProgress(0);
         ui.computerProgress.setProgress(0);
 
-        lastCorrectCount = 0;
-        lastOpponentPosition = 0;
-        lastOpponentErrors = 0;
+        ui.timerLabel.setText("00:00");
+        ui.playerScoreLabel.setText("Score: 0 | Errors: 0");
+        ui.computerScoreLabel.setText("Score: 0 | Errors: 0");
+
+        ui.logBox.getChildren().clear();
+
+        // ensure pause is available in lobby
+        if (ui.pauseButton != null) {
+            ui.pauseButton.setVisible(true);
+            ui.pauseButton.setDisable(false);
+        }
+         // (side back button removed)
+	}
+
+	// confirm exit modal; if cancelled, re-show the pause modal passed as argument.
+	private void showExitConfirm(Stage pauseModal) {
+		Window owner = (pauseModal != null) ? pauseModal : (ui != null && ui.rootPane != null && ui.rootPane.getScene() != null ? ui.rootPane.getScene().getWindow() : null);
+
+		Stage confirm = new Stage();
+		if (owner != null) confirm.initOwner(owner);
+		confirm.initModality(Modality.WINDOW_MODAL);
+		confirm.initStyle(StageStyle.TRANSPARENT);
+
+		StackPane root = new StackPane();
+		root.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+		root.setPrefSize((owner != null ? owner.getWidth() : 400) * 0.6, (owner != null ? owner.getHeight() : 200) * 0.25);
+
+		VBox box = new VBox(12);
+		box.setMaxWidth(400);
+		box.setAlignment(Pos.CENTER);
+		box.setStyle("-fx-background-color: transparent; -fx-padding: 12;");
+
+		Label msg = new Label("Are you sure you want to exit?");
+		msg.setFont(Font.font("Consolas", 18));
+		msg.setTextFill(Color.WHITE);
+
+		HBox buttons = new HBox(10);
+		buttons.setAlignment(Pos.CENTER);
+
+		Button cancel = new Button("Back");
+		cancel.getStyleClass().addAll("button", "primary", "modal-button");
+		cancel.setFont(Font.font("Consolas", 16));
+		cancel.setOnAction(ev -> {
+			try { confirm.close(); } catch (Exception ignored) {}
+			// restore the pause modal so it becomes the only visible popup
+			try { if (pauseModal != null) pauseModal.show(); } catch (Exception ignored) {}
+		});
+
+		Button confirmExit = new Button("Exit Game");
+		confirmExit.getStyleClass().addAll("button", "danger", "modal-button");
+		confirmExit.setFont(Font.font("Consolas", 16));
+		confirmExit.setOnAction(ev -> {
+			try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
+			Platform.exit();
+			System.exit(0);
+		});
+
+		confirmExit.setOnMouseEntered(ev -> confirmExit.setStyle(
+				"-fx-background-color: linear-gradient(to right, #ff4b2b, #ff416c); -fx-text-fill: white; -fx-background-radius: 10;"
+		));
+		confirmExit.setOnMouseExited(ev -> confirmExit.setStyle(
+				"-fx-background-color: linear-gradient(to right, #ff416c, #ff4b2b); -fx-text-fill: white; -fx-background-radius: 10;"
+		));
+
+		buttons.getChildren().addAll(cancel, confirmExit);
+		box.getChildren().addAll(msg, buttons);
+		root.getChildren().add(box);
+		StackPane.setAlignment(box, Pos.CENTER);
+
+		Scene scene = new Scene(root);
+		try {
+			var css = getClass().getResource("/typeshi/styles.css");
+			if (css != null) scene.getStylesheets().add(css.toExternalForm());
+		} catch (Exception ex) { ex.printStackTrace(); }
+		scene.setFill(Color.TRANSPARENT);
+
+		confirm.setScene(scene);
+		confirm.setOnShown(evt -> centerModalOverOwner(confirm, owner));
+		confirm.show();
+
+		FadeTransition ft = new FadeTransition(Duration.millis(180), box);
+		box.setOpacity(0);
+		ft.setFromValue(0);
+		ft.setToValue(1);
+		ft.play();
+	}
+
+	// confirm leave match; returns home on confirm, cancels otherwise
+    private void showLeaveConfirm(Window owner) {
+        Stage confirm = new Stage();
+        if (owner != null) confirm.initOwner(owner);
+        confirm.initModality(Modality.WINDOW_MODAL);
+        confirm.initStyle(StageStyle.TRANSPARENT);
+
+        StackPane root = new StackPane();
+        root.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+        VBox box = new VBox(12);
+        box.setMaxWidth(420);
+        box.setAlignment(Pos.CENTER);
+        box.setStyle("-fx-background-color: transparent; -fx-padding: 12;");
+
+        Label msg = new Label("are you sure you want to leave the match?");
+        msg.setFont(Font.font("Consolas", 16));
+        msg.setTextFill(Color.WHITE);
+
+        HBox buttons = new HBox(10);
+        buttons.setAlignment(Pos.CENTER);
+
+        Button cancel = new Button("back");
+        cancel.getStyleClass().addAll("button", "primary", "modal-button");
+        cancel.setFont(Font.font("Consolas", 14));
+        cancel.setOnAction(e -> { try { confirm.close(); } catch (Exception ignored) {} });
+
+        Button leave = new Button("leave");
+        leave.getStyleClass().addAll("button", "danger", "modal-button");
+        leave.setFont(Font.font("Consolas", 14));
+        leave.setOnAction(e -> {
+            try { if (networkOpponent != null) networkOpponent.stop(); } catch (Exception ignored) {}
+            try { confirm.close(); } catch (Exception ignored) {}
+            // return to home
+            returnToHomeFromPause();
+        });
+
+        buttons.getChildren().addAll(cancel, leave);
+        box.getChildren().addAll(msg, buttons);
+        root.getChildren().add(box);
+        StackPane.setAlignment(box, Pos.CENTER);
+
+        Scene s = new Scene(root);
+        try { var css = getClass().getResource("/typeshi/styles.css"); if (css != null) s.getStylesheets().add(css.toExternalForm()); } catch (Exception ignored) {}
+        s.setFill(Color.TRANSPARENT);
+
+        confirm.setScene(s);
+        confirm.setOnShown(e -> centerModalOverOwner(confirm, owner));
+        confirm.show();
+        FadeTransition ft = new FadeTransition(Duration.millis(180), box);
+        box.setOpacity(0);
+        ft.setFromValue(0);
+        ft.setToValue(1);
+        ft.play();
     }
 
+    private void setPassageFromNetwork(String passage) {
+        while (passageSequence.size() <= 0) {
+            passageSequence.add(wordGenerator.getRandomPassage());
+        }
+        playerPassage = passage;
+        computerPassage = passage;
+        playerPassageIndex = 0;
+        computerPassageIndex = 0;
+        fadeIndex = 0;
+        computerFadeIndex = 0;
+        computerPassageDone = false;
+
+        Platform.runLater(() -> {
+            // build player TextFlow
+            ui.targetTextFlow.getChildren().clear();
+            for (char c : playerPassage.toCharArray()) {
+                Text t = new Text(String.valueOf(c));
+                t.setFill(Color.WHITE);
+                t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
+                ui.targetTextFlow.getChildren().add(t);
+            }
+
+            // build computer TextFlow
+            ui.computerTextFlow.getChildren().clear();
+            for (char c : computerPassage.toCharArray()) {
+                Text t = new Text(String.valueOf(c));
+                t.setFill(Color.GRAY);
+                t.setStyle("-fx-font-family: Consolas; -fx-font-size: 18;");
+                ui.computerTextFlow.getChildren().add(t);
+            }
+
+            ui.inputField.clear();
+            ui.playerProgress.setProgress(0);
+            ui.computerProgress.setProgress(0);
+            lastCorrectCount = 0;
+        });
+    }
+
+    // host a multiplayer match (called from Main)
     public void startHostMultiplayer(int port, int roundSeconds, int difficulty, int mode) {
         multiplayer = true;
         isHost = true;
-
         multiplayerPort = port;
         multiplayerRoundSeconds = roundSeconds;
         currentDifficulty = difficulty;
         this.mode = mode;
 
-        // Show lobby immediately
-        Platform.runLater(() -> prepareMultiplayerLobbyUI("Waiting for opponent..."));
-        Platform.runLater(() -> ui.logBox.getChildren().add(new Label("Hosting on port " + multiplayerPort)));
+        Platform.runLater(() -> {
+            prepareMultiplayerLobbyUI("Waiting for opponent...");
+            ui.logBox.getChildren().add(new Label("Hosting on port " + multiplayerPort));
+        });
 
         new Thread(() -> {
             try {
-                // blocks on accept()
-                mpServer = new MultiplayerServer(multiplayerPort);
+                mpServer = new MultiplayerServer(multiplayerPort); // blocks until client connects
                 Platform.runLater(() -> ui.logBox.getChildren().add(new Label("Client connected!")));
 
-                // NEW: generate a fresh passage when both are connected
+                // generate & share passage + cfg
                 String text = wordGenerator.getRandomPassage();
-
-                // apply it locally (host UI)
                 Platform.runLater(() -> setPassageFromNetwork(text));
-
-                // send to client
                 mpServer.send("TEXT:" + text);
-
-                // Send config: seconds, difficulty, mode
                 mpServer.send("CFG:" + multiplayerRoundSeconds + ":" + currentDifficulty + ":" + this.mode);
 
-                // Start receiver loop for opponent updates
+                // start receiver loop for opponent updates
                 networkOpponent = new NetworkOpponent(this, mpServer, null, true);
                 new Thread(networkOpponent).start();
 
-                // Now start
+                // signal start
                 mpServer.send("START");
 
                 Platform.runLater(() -> {
@@ -1034,8 +1397,6 @@ public class GameController {
                     ui.inputField.requestFocus();
                     startGameWithCountdown(multiplayerRoundSeconds, currentDifficulty);
                 });
-
-
             } catch (Exception e) {
                 e.printStackTrace();
                 Platform.runLater(() -> ui.bottomInstructionLabel.setText("Host error: " + e.getMessage()));
@@ -1043,10 +1404,10 @@ public class GameController {
         }).start();
     }
 
+    // join a hosted match (called from Main)
     public void startJoinMultiplayer(String ip, int port) {
         multiplayer = true;
         isHost = false;
-
         multiplayerPort = port;
 
         Platform.runLater(() -> prepareMultiplayerLobbyUI("Connecting to host..."));
@@ -1054,32 +1415,26 @@ public class GameController {
         new Thread(() -> {
             try {
                 mpClient = new MultiplayerClient(ip, multiplayerPort);
-
-                // Optional handshake
                 try { mpClient.send("READY"); } catch (Exception ignored) {}
 
-                // Read TEXT + CFG + START here (single reader thread).
+                // wait for TEXT, CFG, START
                 while (true) {
                     String msg = mpClient.receive();
                     if (msg == null) throw new RuntimeException("Disconnected");
-
                     if (msg.startsWith("TEXT:")) {
                         String text = msg.substring(5);
                         Platform.runLater(() -> setPassageFromNetwork(text));
-
                     } else if (msg.startsWith("CFG:")) {
-                        // CFG:seconds:difficulty:mode
                         String[] p = msg.split(":");
                         multiplayerRoundSeconds = Integer.parseInt(p[1]);
                         currentDifficulty = Integer.parseInt(p[2]);
                         this.mode = Integer.parseInt(p[3]);
-
                     } else if (msg.equals("START")) {
                         break;
                     }
                 }
 
-                // Start receiver loop for opponent updates
+                // start receiver loop
                 networkOpponent = new NetworkOpponent(this, null, mpClient, false);
                 new Thread(networkOpponent).start();
 
@@ -1088,17 +1443,10 @@ public class GameController {
                     ui.inputField.requestFocus();
                     startGameWithCountdown(multiplayerRoundSeconds, currentDifficulty);
                 });
-
-
             } catch (Exception e) {
                 e.printStackTrace();
                 Platform.runLater(() -> ui.bottomInstructionLabel.setText("Join failed: " + e.getMessage()));
             }
         }).start();
-    }
-
-
-    private String getCurrentPassage() {
-        return playerPassage;
     }
 }
