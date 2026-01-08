@@ -108,12 +108,6 @@ public class SettingsScreen {
         Button save = new Button("Save");
         save.getStyleClass().addAll("button", "primary");
         save.setOnAction(e -> {
-            prefs.putInt("volume", (int) volumeSlider.getValue());
-            prefs.putBoolean("music", musicCheck.isSelected());
-            prefs.putBoolean("sfx", sfxCheck.isSelected());
-            prefs.put("difficulty", defaultDifficultyChoice.getValue());
-            System.out.println("Settings saved!");
-            if (onBack != null) onBack.run();
         });
 
         backButton = new Button("Back");
