@@ -27,6 +27,7 @@ public class Main extends Application {
             if (css != null) scene.getStylesheets().add(css.toExternalForm());
         } catch (Exception ex) {
             ex.printStackTrace();
+
         }
 
         primaryStage.setScene(scene);
@@ -80,9 +81,9 @@ public class Main extends Application {
         });
 
         dialog.showAndWait().ifPresent(choice -> {
-            // --- Choose difficulty + seconds ONLY if host ---
+            //this is for choosing difficulty
             final int[] chosenSeconds = {20};
-            final int[] chosenAIDifficulty = {5}; // your AI difficulty scale (1..9 etc)
+            final int[] chosenAIDifficulty = {5}; //Ai difficulty scale
             final int[] chosenMode = {1};         // 1=Easy,2=Medium,3=Hard (fading mode)
             final int[] chosenRounds = {1};
 
@@ -152,6 +153,7 @@ public class Main extends Application {
                 });
             }
 
+            // create game screen
             UIComponents ui = new UIComponents();
             GameController controller = new GameController(ui);
             ui.setController(controller);
@@ -237,7 +239,7 @@ public class Main extends Application {
 
         scene.setRoot(ui.rootPane);
 
-        controller.startGameWithCountdown(60, aiDifficulty); // 60 seconds, adjust as you like
+        controller.startGameWithCountdown(60, aiDifficulty);
     }
 
     public static void main(String[] args) {

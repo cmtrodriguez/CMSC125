@@ -23,6 +23,12 @@ ScoreManager {
     public void setPlayerErrors(int e) { playerErrors = e; }
     public void setComputerErrors(int e) { computerErrors = e; }
 
+    public int getPlayerScore() { return playerScore; }
+    public int getComputerScore() { return computerScore; }
+    public int getPlayerErrors() { return playerErrors; }
+    public int getComputerErrors() { return computerErrors; }
+
+
 
     public void awardPlayer(int amount) { playerScore += amount; }
     public void awardComputer(int amount) { computerScore += amount; }

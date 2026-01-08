@@ -21,11 +21,20 @@ public class WordGenerator {
 
     // MEDIUM: Moderate length with some technical terms
     private final List<String> mediumPassages = List.of(
-            "JavaFX is a powerful framework for building modern Java GUIs.",
-            "TypeShi challenges your speed and accuracy against the computer.",
-            "Multithreading allows simultaneous operations like timer and AI typing.",
-            "Real-time feedback helps players correct mistakes immediately.",
-            "Programming requires patience, practice, and problem-solving skills."
+            "JavaFX provides tools for building responsive and interactive desktop applications.",
+            "Typing games help improve muscle memory and reduce unnecessary finger movement.",
+            "A consistent typing rhythm is often more effective than rushing for speed.",
+            "Object oriented programming organizes code using classes, objects, and methods.",
+            "Debugging is easier when code is clean, readable, and logically structured.",
+            "Timers and counters are commonly used to track progress during typing tests.",
+            "Practicing accuracy first leads to better long term typing performance.",
+            "Simple algorithms often outperform complex ones when implemented correctly.",
+            "User input must be validated carefully to avoid unexpected program behavior.",
+            "Regular practice builds confidence and reduces typing related mistakes.",
+            "Well named variables make programs easier to understand and maintain.",
+            "Software projects improve faster when feedback is frequent and specific.",
+            "Typing speed increases naturally as familiarity with common words improves.",
+            "Breaking large problems into smaller tasks simplifies development."
     );
 
     // HARD: Long, complex sentences with advanced vocabulary and punctuation
