@@ -2,11 +2,27 @@ import React, { useState } from "react";
 import { 
   Users, Search, ShieldCheck, Mail, Phone, GraduationCap, 
   AlertCircle, Key, Eye, EyeOff, Copy, Check, LayoutGrid, TableProperties,
-  Calendar, Clock, Upload, Sparkles, X, Lock, CheckCircle2, Loader2, BookOpen
+  Calendar, Clock, X, Lock, BookOpen
 } from "lucide-react";
 import { TeamMember, MemberSchedule, Task, normalizeEmail } from "../types";
 import { OFFICIAL_ACCOUNTS } from "./LoginPage";
 import { getOfficialFullName } from "../lib/memberUtils";
+import AvailableTodayCard from "./AvailableTodayCard";
+
+const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function formatLastOpened(iso?: string): string {
+  if (!iso) return "Not recorded yet";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "Not recorded yet";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 interface TeamDirectoryProps {
   members: TeamMember[];
@@ -15,6 +31,7 @@ interface TeamDirectoryProps {
   currentUserEmail?: string;
   currentUserName?: string;
   tasks?: Task[];
+  memberLogins?: Record<string, string>;
   onUpdateMembers?: (members: TeamMember[]) => void;
 }
 
@@ -25,6 +42,7 @@ export default function TeamDirectory({
   currentUserEmail = "",
   currentUserName = "",
   tasks = [],
+  memberLogins = {},
   onUpdateMembers,
 }: TeamDirectoryProps) {
   const [search, setSearch] = useState("");
@@ -36,15 +54,11 @@ export default function TeamDirectory({
 
   // Schedule Modal State
   const [selectedMemberForSchedule, setSelectedMemberForSchedule] = useState<any | null>(null);
-  const [scheduleInputMode, setScheduleInputMode] = useState<"manual" | "image">("manual");
-  const [manualScheduleText, setManualScheduleText] = useState("");
-  const [imageScheduleBase64, setImageScheduleBase64] = useState<string | null>(null);
-  const [imageFileName, setImageFileName] = useState<string>("");
-  const [isScanningImage, setIsScanningImage] = useState(false);
-  const [scanResult, setScanResult] = useState<any | null>(null);
-  const [scanError, setScanError] = useState<string | null>(null);
+  const [unavailableDays, setUnavailableDays] = useState<string[]>([]);
 
   const isLayoutEditor = currentUserRole === "Layout Editor";
+  const isLayoutDeputy = currentUserRole === "Layout Deputy";
+  const canViewWorkload = isLayoutEditor || isLayoutDeputy;
 
   const speakText = (text: string) => {
     if (!speechEnabled) return;
@@ -92,7 +106,10 @@ export default function TeamDirectory({
       );
     });
 
-    const calculatedSemPubs = staffTasks.length + (existing?.currentSemPubs || 0);
+    // Derive purely from completed tasks. Never add the stored currentSemPubs:
+    // handleSaveSchedule persists effectiveMembers for everyone, so adding the
+    // prior stored value would compound the count on each availability edit.
+    const calculatedSemPubs = staffTasks.length;
 
     return {
       id: existing ? existing.id : String(idx + 1),
@@ -133,73 +150,28 @@ export default function TeamDirectory({
   // Open schedule modal
   const handleOpenScheduleModal = (member: any) => {
     setSelectedMemberForSchedule(member);
-    const currentSched = typeof member.schedule === "string" 
-      ? member.schedule 
-      : member.schedule?.summary || "";
-    setManualScheduleText(currentSched);
-    setImageScheduleBase64(null);
-    setImageFileName("");
-    setScanResult(null);
-    setScanError(null);
-    setScheduleInputMode("manual");
+    const existingDays = Array.isArray(member.schedule?.unavailableDays) ? member.schedule.unavailableDays : [];
+    setUnavailableDays(existingDays);
   };
 
-  // Image Upload handler
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImageFileName(file.name);
-    setScanError(null);
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImageScheduleBase64(reader.result as string);
-    };
-    reader.readAsDataURL(file);
+  const toggleUnavailableDay = (day: string) => {
+    setUnavailableDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]);
   };
 
-  // Trigger Gemini Vision Schedule Scan
-  const handleScanScheduleWithAI = async () => {
-    if (!imageScheduleBase64) return;
-    setIsScanningImage(true);
-    setScanError(null);
-
-    try {
-      const res = await fetch("/api/scan-schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: imageScheduleBase64 })
-      });
-
-      if (!res.ok) {
-        throw new Error("Unable to automatically scan schedule. You can enter schedule details manually.");
-      }
-
-      const data = await res.json();
-      setScanResult(data);
-      if (data.summary) {
-        setManualScheduleText(data.summary);
-      }
-      speakText("Schedule successfully scanned from image.");
-    } catch (err: any) {
-      console.error("Schedule scan error:", err);
-      setScanError(err.message || "Failed to scan schedule image. Please type your schedule manually.");
-    } finally {
-      setIsScanningImage(false);
-    }
-  };
-
-  // Save Schedule to backend state
+  // Save Schedule to backend state (reflected across all members' directory)
   const handleSaveSchedule = () => {
     if (!selectedMemberForSchedule) return;
 
-    const nextScheduleText = manualScheduleText.trim() || "No schedule specified yet.";
+    const ordered = WEEK_DAYS.filter(d => unavailableDays.includes(d));
+    const summary = ordered.length > 0
+      ? `Unavailable all day: ${ordered.join(", ")}`
+      : "Available all week";
 
     const updatedMembersList = effectiveMembers.map((m) => {
       if (m.email.toLowerCase() === selectedMemberForSchedule.email.toLowerCase()) {
         return {
           ...m,
-          schedule: scanResult ? { ...scanResult, summary: nextScheduleText } : nextScheduleText
+          schedule: { summary, unavailableDays: ordered, lastUpdated: new Date().toISOString() }
         };
       }
       return m;
@@ -215,7 +187,12 @@ export default function TeamDirectory({
 
   return (
     <div className="space-y-4 sm:space-y-6 text-left">
-      
+
+      {/* Available Today board — Editor / Deputy only */}
+      {canViewWorkload && (
+        <AvailableTodayCard members={members} />
+      )}
+
       {/* Search, Filters, and View Switcher */}
       <div className="bg-white p-3 sm:p-4 rounded-xl border border-gray-100 shadow-xs space-y-3">
         <div className="flex flex-col md:flex-row gap-3 items-center justify-between">
@@ -303,7 +280,7 @@ export default function TeamDirectory({
         {/* Counter banner */}
         <div className="flex items-center justify-between text-[11px] text-gray-500 pt-1">
           <span className="font-medium">
-            Showing <strong className="text-gray-800">{filteredMembers.length}</strong> of {effectiveMembers.length} MKule Layout Desk members
+            Showing <strong className="text-gray-800">{filteredMembers.length}</strong> of {effectiveMembers.length} MKule Layout Section members
           </span>
           <span className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-bold border border-emerald-200">
             Term AY 2026-2027 • Semester 1
@@ -352,32 +329,46 @@ export default function TeamDirectory({
                     </div>
                   </div>
 
-                  {/* Workload Metric: Total Pubs Done This Semester (Replaces Points System) */}
-                  <div className="bg-neutral-50 border border-neutral-200/80 rounded-xl p-2.5 flex items-center justify-between">
-                    <div>
-                      <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider block">
-                        Sem 1 Pubs Done
+                  {/* Workload Metric: Total Pubs Done This Semester (Editor/Deputy only) */}
+                  {canViewWorkload && (
+                    <div className="bg-neutral-50 border border-neutral-200/80 rounded-xl p-2.5 flex items-center justify-between">
+                      <div>
+                        <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider block">
+                          Sem 1 Pubs Done
+                        </span>
+                        <p className="text-sm font-black text-neutral-900 font-sans">
+                          {m.currentSemPubs || 0} <span className="text-[10px] font-normal text-neutral-500">completed</span>
+                        </p>
+                      </div>
+                      <span className="text-[9px] text-neutral-400 font-mono text-right">
+                        Resets Jan 2027<br />(Sem 2)
                       </span>
-                      <p className="text-sm font-black text-neutral-900 font-sans">
-                        {m.currentSemPubs || 0} <span className="text-[10px] font-normal text-neutral-500">completed</span>
-                      </p>
                     </div>
-                    <span className="text-[9px] text-neutral-400 font-mono text-right">
-                      Resets Jan 2027<br />(Sem 2)
-                    </span>
-                  </div>
+                  )}
+
+                  {/* Last account activity — Editor/Deputy only */}
+                  {canViewWorkload && (
+                    <div className="bg-neutral-50 border border-neutral-200/80 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider flex items-center gap-1 shrink-0">
+                        <Clock className="w-3 h-3 text-brand-maroon" /> Last Opened
+                      </span>
+                      <span className="text-[11px] font-semibold text-neutral-800 text-right">
+                        {formatLastOpened(memberLogins[normalizeEmail(m.email).toLowerCase()])}
+                      </span>
+                    </div>
+                  )}
 
                   {/* Schedule Display */}
-                  <div className="space-y-1.5 bg-neutral-50/70 p-2.5 rounded-xl border border-neutral-150">
+                  <div className="space-y-1.5 bg-neutral-50/70 dark:bg-neutral-800/70 p-2.5 rounded-xl border border-neutral-150 dark:border-neutral-700">
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-bold text-neutral-700 flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-[#bc1700]" /> Weekly Availability
+                        <Clock className="w-3 h-3 text-brand-maroon dark:text-brand-maroon-light" /> Weekly Availability
                       </span>
                       {(isLayoutEditor || isSelf) && (
                         <button
                           type="button"
                           onClick={() => handleOpenScheduleModal(m)}
-                          className="text-[10px] font-bold text-[#bc1700] hover:underline cursor-pointer"
+                          className="text-[10px] font-bold text-brand-maroon dark:text-brand-maroon-light hover:underline cursor-pointer"
                         >
                           Update
                         </button>
@@ -497,7 +488,7 @@ export default function TeamDirectory({
       {/* VIEW 2: Account Details & Credentials Table */}
       {viewMode === "table" && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xs overflow-hidden">
-          <div className="p-3.5 sm:p-4 bg-neutral-50/80 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="p-3.5 sm:p-4 bg-neutral-50/80 dark:bg-neutral-800/80 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h4 className="font-display font-bold text-xs sm:text-sm text-gray-900">
                 Layout Section Member Directory &amp; Schedule Roster
@@ -527,12 +518,12 @@ export default function TeamDirectory({
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-neutral-100/75 text-neutral-600 text-[10px] font-bold uppercase tracking-wider border-b border-neutral-200">
+              <thead className="bg-neutral-100/75 dark:bg-neutral-800 text-neutral-600 text-[10px] font-bold uppercase tracking-wider border-b border-neutral-200">
                 <tr>
                   <th className="py-3 px-4">Display Name &amp; Member</th>
                   <th className="py-3 px-3">Role</th>
                   <th className="py-3 px-3">College</th>
-                  <th className="py-3 px-3">Sem 1 Pubs Done</th>
+                  {canViewWorkload && <th className="py-3 px-3">Sem 1 Pubs Done</th>}
                   <th className="py-3 px-4">Schedule Availability</th>
                   <th className="py-3 px-4">UP Webmail</th>
                   <th className="py-3 px-4">Contact</th>
@@ -565,9 +556,11 @@ export default function TeamDirectory({
                           {m.college}
                         </span>
                       </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <span className="font-bold text-neutral-900">{m.currentSemPubs || 0} pubs</span>
-                      </td>
+                      {canViewWorkload && (
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          <span className="font-bold text-neutral-900">{m.currentSemPubs || 0} pubs</span>
+                        </td>
+                      )}
                       <td className="py-3 px-4 max-w-[200px]">
                         <div className="truncate text-[11px] text-neutral-700" title={schedText}>
                           {schedText}
@@ -576,7 +569,7 @@ export default function TeamDirectory({
                           <button
                             type="button"
                             onClick={() => handleOpenScheduleModal(m)}
-                            className="text-[10px] text-[#bc1700] hover:underline font-bold cursor-pointer"
+                            className="text-[10px] text-brand-maroon hover:underline font-bold cursor-pointer"
                           >
                             Edit Schedule
                           </button>
@@ -645,18 +638,18 @@ export default function TeamDirectory({
       {/* SCHEDULE ENTER / SCAN MODAL */}
       {selectedMemberForSchedule && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-neutral-200 max-w-lg w-full p-5 space-y-4 text-left animate-fade-in max-h-[90vh] overflow-y-auto">
-            
-            <div className="flex items-center justify-between border-b pb-3 border-neutral-200">
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-200 dark:border-neutral-800 max-w-lg w-full p-5 space-y-4 text-left animate-fade-in max-h-[90vh] overflow-y-auto">
+
+            <div className="flex items-center justify-between border-b pb-3 border-neutral-200 dark:border-neutral-800">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-[#bc1700]/10 text-[#bc1700] flex items-center justify-center">
+                <div className="w-9 h-9 rounded-xl bg-brand-maroon/10 text-brand-maroon dark:text-brand-maroon-light flex items-center justify-center">
                   <Calendar className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-display font-black text-sm text-neutral-900">
+                  <h3 className="font-display font-black text-sm text-neutral-900 dark:text-neutral-100">
                     Schedule Availability
                   </h3>
-                  <p className="text-[11px] text-neutral-500">
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
                     {selectedMemberForSchedule.displayName || selectedMemberForSchedule.name}
                   </p>
                 </div>
@@ -670,118 +663,35 @@ export default function TeamDirectory({
               </button>
             </div>
 
-            {/* Mode Tabs */}
-            <div className="flex items-center bg-neutral-100 p-1 rounded-xl gap-1">
-              <button
-                type="button"
-                onClick={() => setScheduleInputMode("manual")}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  scheduleInputMode === "manual"
-                    ? "bg-white text-neutral-900 shadow-xs"
-                    : "text-neutral-500 hover:text-neutral-900"
-                }`}
-              >
-                Manual Entry
-              </button>
-              <button
-                type="button"
-                onClick={() => setScheduleInputMode("image")}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                  scheduleInputMode === "image"
-                    ? "bg-[#bc1700] text-white shadow-xs"
-                    : "text-neutral-500 hover:text-neutral-900"
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Upload &amp; Scan Image</span>
-              </button>
+            {/* 7 day-availability buttons: press a day to mark it unavailable for the whole day */}
+            <div className="space-y-3">
+              <p className="text-xs font-bold text-neutral-800">
+                Tap the days you are <span className="text-brand-maroon">NOT available</span> for the whole day.
+              </p>
+              <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+                {WEEK_DAYS.map((day) => {
+                  const isOff = unavailableDays.includes(day);
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() => toggleUnavailableDay(day)}
+                      aria-pressed={isOff}
+                      className={`py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                        isOff
+                          ? "bg-brand-maroon text-white border-brand-maroon shadow-xs"
+                          : "bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 border-neutral-300 dark:border-neutral-600 hover:border-brand-maroon/60 hover:text-brand-maroon dark:hover:text-brand-maroon-light"
+                      }`}
+                    >
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-neutral-400">
+                This schedule will be saved and reflected across all other layout members' directory immediately.
+              </p>
             </div>
-
-            {/* Mode 1: Manual */}
-            {scheduleInputMode === "manual" && (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1">
-                    Weekly Schedule Summary
-                  </label>
-                  <textarea
-                    rows={4}
-                    placeholder="e.g. Free Mon/Wed afternoons after 1 PM, Friday and weekends all day. Classes on Tue/Thu 8AM-5PM."
-                    value={manualScheduleText}
-                    onChange={(e) => setManualScheduleText(e.target.value)}
-                    className="w-full p-3 border border-neutral-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-[#bc1700] resize-none"
-                  />
-                  <p className="text-[10px] text-neutral-400 mt-1">
-                    This schedule will be saved and reflected across all other layout members' directory immediately.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Mode 2: Image Upload & Scan */}
-            {scheduleInputMode === "image" && (
-              <div className="space-y-3">
-                <div className="border-2 border-dashed border-neutral-300 rounded-xl p-4 text-center space-y-2 hover:border-[#bc1700] transition-colors">
-                  <Upload className="w-6 h-6 text-neutral-400 mx-auto" />
-                  <p className="text-xs font-bold text-neutral-700">
-                    Upload Form 5, Timetable, or Study Load Screenshot
-                  </p>
-                  <p className="text-[10px] text-neutral-400">
-                    Supports PNG, JPG, or screenshot images
-                  </p>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    className="block w-full text-xs text-neutral-500 file:mr-2 file:py-1 file:px-3 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-neutral-100 file:text-neutral-700 hover:file:bg-neutral-200 cursor-pointer"
-                  />
-                </div>
-
-                {imageScheduleBase64 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-neutral-700 truncate">{imageFileName}</span>
-                      <button
-                        type="button"
-                        onClick={handleScanScheduleWithAI}
-                        disabled={isScanningImage}
-                        className="px-3 py-1.5 bg-[#bc1700] hover:bg-[#8e1200] text-white font-bold rounded-lg text-xs transition-all flex items-center gap-1 cursor-pointer disabled:opacity-60 shadow-xs"
-                      >
-                        {isScanningImage ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Scanning with AI...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>Scan Image with AI</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {scanResult && (
-                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1.5 text-xs">
-                        <div className="flex items-center gap-1 text-emerald-800 font-bold">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          <span>Schedule Scanned Successfully</span>
-                        </div>
-                        <p className="text-[11px] text-emerald-900 leading-relaxed font-medium">
-                          {scanResult.summary}
-                        </p>
-                      </div>
-                    )}
-
-                    {scanError && (
-                      <p className="text-[11px] text-red-600 font-medium">
-                        {scanError}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Modal Actions */}
             <div className="pt-3 border-t border-neutral-200 flex items-center justify-end gap-2">
@@ -795,7 +705,7 @@ export default function TeamDirectory({
               <button
                 type="button"
                 onClick={handleSaveSchedule}
-                className="px-4 py-1.5 bg-[#bc1700] hover:bg-[#8e1200] text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-xs"
+                className="px-4 py-1.5 bg-brand-maroon hover:bg-brand-maroon-dark text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-xs"
               >
                 Save Schedule
               </button>

@@ -1,15 +1,15 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { 
   LayoutGrid, FileSpreadsheet, Kanban, GraduationCap, Calendar, 
-  HelpCircle, Bot, Users, Bell, AlertOctagon, Plus, X, Shield, 
+  HelpCircle, Bot, Users, Bell, AlertOctagon, Plus, X, Shield, Ban, Trash2,
   Sparkles, ShieldCheck, HeartPulse, CheckSquare, RefreshCw, BookOpen,
-  Menu, LogOut, Link2, Sun, Moon, FileText, CheckCircle2, ExternalLink, Loader2
+  Menu, LogOut, Link2, Sun, Moon, FileText, CheckCircle2, ExternalLink, Loader2, User, ArrowRight
 } from "lucide-react";
 
 // Sub Components
 import DashboardOverview from "./components/DashboardOverview";
-import AssignmentsList from "./components/AssignmentsList";
+import AssignmentsList, { toISOFormatDate } from "./components/AssignmentsList";
 import MeetingPolls from "./components/MeetingPolls";
 import TeamDirectory from "./components/TeamDirectory";
 import CalendarView from "./components/CalendarView";
@@ -19,8 +19,12 @@ import QuickAccessHub from "./components/QuickAccessHub";
 import ProfileSettings from "./components/ProfileSettings";
 import { LayoutStaffDashboard, EicDashboard } from "./components/RoleDashboards";
 import { CanvaDirectory } from "./components/CanvaDirectory";
-import { OFFICIAL_MEMBERS_MAP, getPreferredFirstName } from "./lib/memberUtils";
-import mkuleImg from "mkule.png";
+import { OFFICIAL_MEMBERS_MAP, getPreferredFirstName, resolveLayoutAssignee, resolveMemberEmail, getEditorDeputyEmails } from "./lib/memberUtils";
+import { AccentTheme, applyAccentCssVars } from "./lib/accentTheme";
+import { seededUuid } from "./lib/seededUuid";
+import { getCanvaLinkForContent, getPubmatCanvaTemplates, isOnlinePubmatTask, MEDIUM_CANVA_LINK, normalizeContentCategory } from "./lib/canvaTemplates";
+import { supabase, fetchUserProfileByEmail, fetchTasks, fetchMembers, fetchComments, fetchCalendarEvents, fetchPolls, fetchAnnouncements, fetchNotifications, fetchIssueSheets, upsertTask, deleteTask, upsertMember, createComment, updateComment, upsertCalendarEvent, deleteCalendarEvent, createPoll, updatePollOptionVotes, deletePoll, createNotification, markNotificationRead, clearNotifications, createAnnouncement, saveIssueSheets, fetchMemberLogins, recordMemberLogin, subscribeToLayoutRealtime, type MemberLoginMap } from "./lib/supabase";
+import mkuleImg from "./mkule.png";
 
 // Domain Models
 import { Task, TeamMember, CalendarEvent, Poll, Notification, TaskComment, UserRole, normalizeEmail } from "./types";
@@ -30,13 +34,25 @@ export default function App() {
   
   // Data State
   const [tasks, setTasks] = useState<Task[]>([]);
+  // Mirror of `tasks` kept in sync so commitTasks can compute the next list from the
+  // latest value even when several mutations land in the same render batch.
+  const tasksRef = useRef<Task[]>(tasks);
+  tasksRef.current = tasks;
   const [members, setMembers] = useState<TeamMember[]>([]);
+  const [memberLogins, setMemberLogins] = useState<MemberLoginMap>({});
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Live clock for the Desk Active Console header (ticks every second).
+  const [currentDateTime, setCurrentDateTime] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentDateTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // User Authentication & Role States
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -55,7 +71,10 @@ export default function App() {
     { id: "issue-row-8", page: "8", section: "Cult", title: "Farmer Tula about Kanin", writer: "Jhe", graphics: "", layout: "Jhe", online: "", progress: "" }
   ];
 
-  const [issueSheets, setIssueSheets] = useState<Array<{ id: string; title: string; rows: Array<{ id: string; page: string; section: string; title: string; writer: string; graphics: string; layout: string; online: string; progress: string }> }>>(() => {
+  const [issueSheets, setIssueSheets] = useState<Array<{ id: string; title: string; rows: Array<{ id: string; page: string; section: string; title: string; writer: string; graphics: string; layout: string; online: string; progress: string; draftLink?: string }> }>>(() => {
+    // Issue sheets are shared team data, so the backend copy (loaded in the
+    // fetch effect below) is authoritative. Local storage is only a seed cache
+    // so the first paint is not empty before the network round-trip.
     try {
       const saved = localStorage.getItem("mkule_issue_publication_sheets");
       if (saved) {
@@ -65,8 +84,26 @@ export default function App() {
     } catch {
       // ignore malformed local storage values
     }
-    return [{ id: "issue-sheet-1", title: "Issue Publication Sheet", rows: issueSheetTemplate }];
+    return [{ id: "issue-sheet-1", title: "Issue Pages Sheet", rows: issueSheetTemplate }];
   });
+  const issueSheetsRef = useRef(issueSheets);
+  issueSheetsRef.current = issueSheets;
+
+  // Persist issue sheets to the shared backend so every account sees the same rows.
+  const persistIssueSheets = (sheets: typeof issueSheets) => {
+    setIssueSheets(sheets);
+    issueSheetsRef.current = sheets;
+    localStorage.setItem("mkule_issue_publication_sheets", JSON.stringify(sheets));
+    saveIssueSheets(sheets).catch(() => {
+      // Fallback: also try the legacy /api/state endpoint
+      pushStateToBackend({ issueSheets: sheets });
+    });
+  };
+
+  // Functional-updater form that always computes from the freshest ref and persists.
+  const updateIssueSheets = (updater: (prev: typeof issueSheets) => typeof issueSheets) => {
+    persistIssueSheets(updater(issueSheetsRef.current));
+  };
   const [currentIssueSheetId, setCurrentIssueSheetId] = useState(() => {
     try {
       const saved = localStorage.getItem("mkule_issue_publication_current_sheet");
@@ -79,12 +116,24 @@ export default function App() {
 
   const currentIssueSheet = issueSheets.find((sheet) => sheet.id === currentIssueSheetId) ?? issueSheets[0];
   const issueRows = currentIssueSheet?.rows ?? [];
-  const issueSheetTitle = currentIssueSheet?.title ?? "Issue Publication Sheet";
-  const issueTaskCards = tasks.filter((task) => {
-    const isIssueTask = task.typeOfRelease === "Issue Article" || (task as any).sourceIssueRowId;
-    const isOnlineOnlyCompanion = task.title.includes("(Online Pubmat)") || task.typeOfRelease === "Online Article";
-    return isIssueTask && !isOnlineOnlyCompanion;
-  });
+  const issueSheetTitle = currentIssueSheet?.title ?? "Issue Pages Sheet";
+
+  // Issue tasks are scoped to the currently selected sheet: a task belongs to a
+  // sheet only when it was dispatched from one of that sheet's rows. A freshly
+  // added sheet has no rows yet, so its Issue Tasks section starts blank.
+  const currentSheetRowIds = new Set(issueRows.map((row) => row.id));
+  const isCompletedTask = (task: Task) =>
+    task.progress === "Completed" || task.progress === "Approved" || task.progress === "Archived" || task.progress === "Shelved";
+  const issueTaskCards = tasks
+    .filter((task) => {
+      const isOnlineOnlyCompanion = task.title.includes("(Online Pubmat)") || task.typeOfRelease === "Online Article";
+      if (isOnlineOnlyCompanion) return false;
+      const rowId = (task as any).sourceIssueRowId;
+      return !!rowId && currentSheetRowIds.has(rowId);
+    })
+    // Assigned/pending tasks surface on top; completed ones stay listed but sink
+    // to the bottom (they are greyed out in the card markup below).
+    .sort((a, b) => Number(isCompletedTask(a)) - Number(isCompletedTask(b)));
 
   // Accessibility State (Passed to Panel)
   const [highContrast, setHighContrast] = useState(false);
@@ -92,37 +141,97 @@ export default function App() {
   const [fontSizeMultiplier, setFontSizeMultiplier] = useState(1);
   const [speechEnabled, setSpeechEnabled] = useState(false);
 
-  // Theme & Appearance State (Persisted across sessions)
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem("mkule_theme") === "dark";
-  });
-  const [accentTheme, setAccentTheme] = useState<"maroon" | "navy" | "forest" | "grape">(() => {
-    return (localStorage.getItem("mkule_accent") as any) || "maroon";
+  // Theme & Appearance State (persisted per-account, defaults to light)
+  const [darkMode, setDarkMode] = useState<boolean>(false);
+  const [accentTheme, setAccentTheme] = useState<AccentTheme>(() => {
+    return (localStorage.getItem("mkule_accent") as AccentTheme) || "maroon";
   });
 
+  // Guards the persist effect so loading a saved theme (or switching accounts)
+  // never writes the previous account's value onto the new account's key.
+  const themeSkipPersist = useRef(false);
+  const wasAuthenticatedRef = useRef(false);
+  // Guards "last opened" recording so it fires once per app load, not on every
+  // background token refresh, matching the "each app open" semantics.
+  const memberLoginRecordedRef = useRef(false);
+  const themeKeyFor = (email: string) => `mkule_theme_${email.toLowerCase()}`;
+
+  // Load the signed-in account's own theme preference; light when unset.
   useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("mkule_theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("mkule_theme", "light");
+    themeSkipPersist.current = true;
+    if (!userEmail) {
+      setDarkMode(false);
+      return;
     }
-  }, [darkMode]);
+    setDarkMode(localStorage.getItem(themeKeyFor(userEmail)) === "dark");
+  }, [userEmail]);
 
-  const applyAccentTheme = (color: "maroon" | "navy" | "forest" | "grape") => {
+  // Apply the dark class and persist the choice against the current account.
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    if (themeSkipPersist.current) {
+      themeSkipPersist.current = false;
+      return;
+    }
+    if (!userEmail) return;
+    localStorage.setItem(themeKeyFor(userEmail), darkMode ? "dark" : "light");
+  }, [darkMode, userEmail]);
+
+  const applyAccentTheme = (color: AccentTheme) => {
     setAccentTheme(color);
     localStorage.setItem("mkule_accent", color);
-    const colors = {
-      maroon: { primary: "#bc1700", light: "#d32f2f", dark: "#8b0000" },
-      navy: { primary: "#1E3A8A", light: "#3B82F6", dark: "#172554" },
-      forest: { primary: "#065F46", light: "#10B981", dark: "#064E3B" },
-      grape: { primary: "#581C87", light: "#8B5CF6", dark: "#3B0764" }
-    };
-    const root = document.documentElement;
-    root.style.setProperty("--color-brand-maroon", colors[color].primary);
-    root.style.setProperty("--color-brand-maroon-light", colors[color].light);
-    root.style.setProperty("--color-brand-maroon-dark", colors[color].dark);
+    applyAccentCssVars(color);
+  };
+
+  useEffect(() => {
+    applyAccentCssVars(accentTheme);
+  }, [accentTheme]);
+
+  // Tasks persisted from issue-sheet rows carry deterministic ids; re-attach the
+  // source row id after a fetch so sheet edits can still find and replace them.
+  // The sheet title is refreshed from the current sheet so renames propagate.
+  const tagTasksWithSourceRows = (list: Task[], sheets: typeof issueSheets): Task[] => {
+    const rowIdByTaskId = new Map<string, string>();
+    const sheetTitleByRowId = new Map<string, string>();
+    sheets.forEach((sheet) => sheet.rows.forEach((row) => {
+      rowIdByTaskId.set(seededUuid(`issue-task-${row.id}`), row.id);
+      rowIdByTaskId.set(seededUuid(`online-task-${row.id}`), row.id);
+      rowIdByTaskId.set(seededUuid(`issue-pending-${row.id}`), row.id);
+      sheetTitleByRowId.set(row.id, sheet.title);
+    }));
+    return list.map((t) => {
+      const rowId = t.sourceIssueRowId || rowIdByTaskId.get(t.id);
+      if (!rowId) return t;
+      const sheetTitle = sheetTitleByRowId.get(rowId) ?? t.sourceSheetTitle;
+      if (t.sourceIssueRowId === rowId && t.sourceSheetTitle === sheetTitle) return t;
+      return { ...t, sourceIssueRowId: rowId, sourceSheetTitle: sheetTitle };
+    });
+  };
+
+  const applyAssignmentLinkDefaults = (list: Task[]): Task[] => {
+    const normalized = list.map((task) => {
+      const isCultCategory = /^(?:cult|cult\/culture)$/i.test((task.typeOfContent || "").trim());
+      const typeOfContent = normalizeContentCategory(task.typeOfContent);
+      const isCultureCategory = typeOfContent === "Culture";
+      return {
+        ...task,
+        typeOfContent,
+        canvaLink: isCultCategory ? getCanvaLinkForContent("Culture") : task.canvaLink || (isCultureCategory ? getCanvaLinkForContent("Culture") : ""),
+        mediumCanvaLink: isOnlinePubmatTask(task.typeOfRelease, task.title) ? task.mediumCanvaLink || MEDIUM_CANVA_LINK : undefined,
+      };
+    });
+
+    normalized.forEach((task, index) => {
+      const previous = list[index];
+      if (
+        task.typeOfContent !== previous.typeOfContent ||
+        task.canvaLink !== (previous.canvaLink || "") ||
+        task.mediumCanvaLink !== previous.mediumCanvaLink
+      ) {
+        void upsertTask(task);
+      }
+    });
+    return normalized;
   };
 
   // Modals Visibility
@@ -132,19 +241,19 @@ export default function App() {
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [editingIssueRowId, setEditingIssueRowId] = useState<string | null>(null);
   const [issueRowDraft, setIssueRowDraft] = useState<any | null>(null);
+  const [confirmDeleteRowId, setConfirmDeleteRowId] = useState<string | null>(null);
 
   // Form Inputs
   const [formTitle, setFormTitle] = useState("");
   const [formDocLink, setFormDocLink] = useState("");
   const [taskFormOrigin, setTaskFormOrigin] = useState<string>("general");
   const [formReleaseType, setFormReleaseType] = useState("Online Article");
-  const [formContentType, setFormContentType] = useState("feats artx");
+  const [formContentType, setFormContentType] = useState("News");
   const [formWriter, setFormWriter] = useState("");
   const [formArtist, setFormArtist] = useState("Unassigned");
   const [formPriority, setFormPriority] = useState<"Low" | "Medium" | "High" | "Urgent">("Medium");
   const [formReleaseDate, setFormReleaseDate] = useState("");
   const [formWriteup, setFormWriteup] = useState("");
-  const [formCanvaLink, setFormCanvaLink] = useState("");
   const [formPubmatLink, setFormPubmatLink] = useState("");
 
   const layoutArtistOptions = Array.from(
@@ -156,12 +265,15 @@ export default function App() {
           const isLayoutMember = type === "layout" || role.includes("layout") || role.includes("deputy") || role.includes("staffer") || role.includes("probi");
           if (!isLayoutMember) return false;
 
-          if (userRole === "Layout Editor") {
-            return role.includes("deputy") || role.includes("staffer") || role.includes("probi");
-          }
-
-          if (userRole === "Layout Deputy") {
-            return role.includes("editor") || role.includes("staffer") || role.includes("probi");
+          if (userRole === "Layout Editor" || userRole === "Layout Deputy") {
+            // Include both the editor and deputy (alongside staffers/probis) so
+            // either lead can assign a task to themselves.
+            return (
+              role.includes("editor") ||
+              role.includes("deputy") ||
+              role.includes("staffer") ||
+              role.includes("probi")
+            );
           }
 
           return false;
@@ -191,29 +303,87 @@ export default function App() {
     ? formArtist
     : "Unassigned";
 
-  // Fetch initial backend state
-  useEffect(() => {
-    const fetchState = async () => {
+  // Fetch all app data from Supabase and initialise local state
+  const fetchAllState = async () => {
+    try {
+      const [sbTasks, sbMembers, sbComments, sbEvents, sbPolls, sbAnnouncements, sbNotifications, sbIssueSheets, sbMemberLogins] = await Promise.all([
+        fetchTasks(),
+        fetchMembers(),
+        fetchComments(),
+        fetchCalendarEvents(),
+        fetchPolls(),
+        fetchAnnouncements(),
+        fetchNotifications(),
+        fetchIssueSheets(),
+        fetchMemberLogins()
+      ]);
+
+      setTasks(tagTasksWithSourceRows(applyAssignmentLinkDefaults(sbTasks), (sbIssueSheets && sbIssueSheets.length > 0) ? sbIssueSheets : issueSheetsRef.current));
+      setMembers(sbMembers);
+      setMemberLogins(sbMemberLogins);
+      setComments(sbComments);
+      setEvents(sbEvents);
+      setPolls(sbPolls);
+      setAnnouncements(sbAnnouncements);
+      setNotifications(sbNotifications);
+
+      if (sbIssueSheets && sbIssueSheets.length > 0) {
+        setIssueSheets(sbIssueSheets);
+        issueSheetsRef.current = sbIssueSheets;
+        localStorage.setItem("mkule_issue_publication_sheets", JSON.stringify(sbIssueSheets));
+      }
+    } catch (err) {
+      // Fall back to legacy /api/state if Supabase not available
       try {
         const response = await fetch("/api/state");
-        const data = await response.json();
-        setTasks(data.tasks || []);
-        setMembers(data.members || []);
-        setEvents(data.events || []);
-        setPolls(data.polls || []);
-        setComments(data.comments || []);
-        setAnnouncements(data.announcements || []);
-        setNotifications(data.notifications || []);
-      } catch (err) {
-        console.error("Failed to load initial layout state", err);
-      } finally {
-        setLoading(false);
+        if (response.ok) {
+          const data = await response.json();
+          setTasks(applyAssignmentLinkDefaults(data.tasks || []));
+          setMembers(data.members || []);
+          setEvents(data.events || []);
+          setPolls(data.polls || []);
+          setComments(data.comments || []);
+          setAnnouncements(data.announcements || []);
+          setNotifications(data.notifications || []);
+          if (Array.isArray(data.issueSheets) && data.issueSheets.length > 0) {
+            setIssueSheets(data.issueSheets);
+            localStorage.setItem("mkule_issue_publication_sheets", JSON.stringify(data.issueSheets));
+          }
+        }
+      } catch (fallbackErr) {
+        console.error("Failed to load initial layout state", fallbackErr);
       }
-    };
-    fetchState();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAllState();
+
+    // Subscribe to realtime updates — no polling needed
+    const unsubscribe = subscribeToLayoutRealtime({
+      onTasksChange: async () => { setTasks(tagTasksWithSourceRows(applyAssignmentLinkDefaults(await fetchTasks()), issueSheetsRef.current)); },
+      onCommentsChange: async () => { setComments(await fetchComments()); },
+      onCalendarChange: async () => { setEvents(await fetchCalendarEvents()); },
+      onPollsChange: async () => { setPolls(await fetchPolls()); },
+      onNotificationsChange: async () => { setNotifications(await fetchNotifications()); },
+      onAnnouncementsChange: async () => { setAnnouncements(await fetchAnnouncements()); },
+      onMembersChange: async () => { setMembers(await fetchMembers()); },
+      onMemberLoginsChange: (data) => { setMemberLogins(data || {}); },
+      onIssueSheetsChange: (data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setIssueSheets(data);
+          issueSheetsRef.current = data;
+          localStorage.setItem("mkule_issue_publication_sheets", JSON.stringify(data));
+        }
+      }
+    });
+
+    return () => { unsubscribe(); };
   }, []);
 
-  // Save changes to backend
+  // Legacy helper — still used by issueSheets, but Supabase-first
   const pushStateToBackend = async (updates: {
     tasks?: Task[];
     members?: TeamMember[];
@@ -222,102 +392,463 @@ export default function App() {
     comments?: TaskComment[];
     notifications?: Notification[];
     announcements?: any[];
+    issueSheets?: typeof issueSheets;
   }) => {
-    const nextTasks = updates.tasks !== undefined ? updates.tasks : tasks;
-    const nextMembers = updates.members !== undefined ? updates.members : members;
-    const nextEvents = updates.events !== undefined ? updates.events : events;
-    const nextPolls = updates.polls !== undefined ? updates.polls : polls;
-    const nextComments = updates.comments !== undefined ? updates.comments : comments;
-    const nextNotifications = updates.notifications !== undefined ? updates.notifications : notifications;
-    const nextAnnouncements = updates.announcements !== undefined ? updates.announcements : announcements;
-
-    try {
-      await fetch("/api/state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          members: nextMembers,
-          tasks: nextTasks,
-          events: nextEvents,
-          polls: nextPolls,
-          comments: nextComments,
-          notifications: nextNotifications,
-          announcements: nextAnnouncements
-        })
-      });
-    } catch (err) {
-      console.error("Error writing backend state changes", err);
+    // Issue sheets are stored in app_state via Supabase
+    if (updates.issueSheets) {
+      saveIssueSheets(updates.issueSheets).catch(() => {});
     }
+    // Other mutations are handled via direct Supabase calls in each handler
   };
 
   const handleUpdateTasks = (newTasks: Task[]) => {
+    const prevTasks = tasksRef.current;
+    tasksRef.current = newTasks;
     setTasks(newTasks);
-    pushStateToBackend({ tasks: newTasks });
+    persistTaskDiff(prevTasks, newTasks);
+
+    // Deadline-change alert: notify the assignee when a leader edits the due date.
+    // Only real dates count — issue-sheet tasks store a page number in releaseDate.
+    prevTasks.forEach((prev) => {
+      const next = newTasks.find((t) => t.id === prev.id);
+      if (!next) return;
+      const oldDate = (prev.releaseDate || "").trim();
+      const newDate = (next.releaseDate || "").trim();
+      const looksLikeDate = /(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)/i.test(newDate) || /^\d{4}-\d{2}-\d{2}$/.test(newDate);
+      if (oldDate && newDate && oldDate !== newDate && looksLikeDate && next.illusLayout && next.illusLayout !== "Unassigned") {
+        const assigneeEmail = resolveMemberEmail(next.illusLayout);
+        if (assigneeEmail && assigneeEmail.toLowerCase() !== userEmail.toLowerCase()) {
+          handleAddNotification(
+            "Deadline Updated",
+            `The deadline for '${next.title}' was moved from ${oldDate} to ${newDate}.`,
+            "deadline",
+            [assigneeEmail]
+          );
+        }
+      }
+    });
+  };
+
+  // Writes created/edited rows and deletes removed ones so every task with a real
+  // DB (UUID) id survives a refresh and stays in sync across devices.
+  const isDbId = (id?: string) =>
+    typeof id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+  const persistTaskDiff = (prevTasks: Task[], nextTasks: Task[]) => {
+    const prevById = new Map(prevTasks.filter((t) => isDbId(t.id)).map((t) => [t.id, t]));
+    const newById = new Map(nextTasks.filter((t) => isDbId(t.id)).map((t) => [t.id, t]));
+
+    prevById.forEach((_, id) => {
+      if (!newById.has(id)) void deleteTask(id);
+    });
+    newById.forEach((task, id) => {
+      const prev = prevById.get(id);
+      if (!prev || JSON.stringify(prev) !== JSON.stringify(task)) {
+        void upsertTask(task);
+      }
+    });
+  };
+
+  // Compute the next task list from current state and persist it to the backend.
+  // Used by every mutation path so no task change is lost on refresh.
+  const commitTasks = (updater: Task[] | ((prev: Task[]) => Task[])) => {
+    const prevTasks = tasksRef.current;
+    const nextTasks = typeof updater === "function"
+      ? (updater as (prev: Task[]) => Task[])(prevTasks)
+      : updater;
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
+    persistTaskDiff(prevTasks, nextTasks);
+    // Realtime will reflect the change across all sessions
   };
 
   const handleUpdateMembers = (newMembers: TeamMember[]) => {
     setMembers(newMembers);
-    pushStateToBackend({ members: newMembers });
+    newMembers.forEach(m => upsertMember(m).catch(() => {}));
   };
 
   const handleUpdateEvents = (newEvents: CalendarEvent[]) => {
     setEvents(newEvents);
-    pushStateToBackend({ events: newEvents });
+    // Individual event mutations handled via upsertCalendarEvent/deleteCalendarEvent
   };
 
   const handleUpdatePolls = (newPolls: Poll[]) => {
+    const prevPolls = polls;
     setPolls(newPolls);
-    pushStateToBackend({ polls: newPolls });
+
+    const prevById = new Map(prevPolls.map(p => [p.id, p]));
+    const seenIds = new Set<string>();
+
+    newPolls.forEach((poll) => {
+      seenIds.add(poll.id);
+      const prev = prevById.get(poll.id);
+      if (!prev) {
+        void createPoll(poll);
+        return;
+      }
+      poll.options.forEach((opt) => {
+        const prevOpt = prev.options.find(o => o.id === opt.id);
+        if (!prevOpt || prevOpt.votes.join("|") !== opt.votes.join("|")) {
+          void updatePollOptionVotes(opt.id, opt.votes);
+        }
+      });
+    });
+
+    prevById.forEach((_, id) => {
+      if (!seenIds.has(id)) void deletePoll(id);
+    });
   };
 
   const handleAddComment = (newComment: TaskComment) => {
-    const updated = [...comments, newComment];
-    setComments(updated);
-    pushStateToBackend({ comments: updated });
+    setComments((prev) => [...prev, newComment]);
+    createComment(newComment).then((saved) => {
+      if (saved) setComments((prev) => prev.map((comment) => comment.id === newComment.id ? saved : comment));
+    }).catch(() => {});
   };
 
-  const handleLogin = (role: UserRole, name: string, email: string) => {
-    setUserRole(role);
-    setUserName(name);
-    setUserEmail(normalizeEmail(email));
+  const handleUpdateComment = async (comment: TaskComment): Promise<boolean> => {
+    const saved = await updateComment(comment);
+    if (!saved) return false;
+    setComments((prev) => prev.map((item) => item.id === saved.id ? saved : item));
+    return true;
+  };
+
+  const handleRemoveComment = (comment: TaskComment): Promise<boolean> =>
+    handleUpdateComment({ ...comment, removedAt: new Date().toISOString() });
+
+  const AUTH_SESSION_KEY = "mkule_auth_session";
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
+  const clearStoredSession = () => {
+    try {
+      localStorage.removeItem(AUTH_SESSION_KEY);
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const persistSessionState = (email: string, role: UserRole, name: string) => {
+    try {
+      const payload = {
+        email: normalizeEmail(email),
+        role,
+        name,
+        lastActivityAt: Date.now(),
+      };
+      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const restoreStoredSession = () => {
+    try {
+      const raw = localStorage.getItem(AUTH_SESSION_KEY);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw) as {
+        email?: string;
+        role?: UserRole;
+        name?: string;
+        lastActivityAt?: number;
+      };
+
+      if (!parsed.email || !parsed.role || !parsed.name) {
+        clearStoredSession();
+        return null;
+      }
+
+      const elapsed = Date.now() - (parsed.lastActivityAt ?? Date.now());
+      if (elapsed > SIX_HOURS_MS) {
+        clearStoredSession();
+        return null;
+      }
+
+      return parsed;
+    } catch {
+      clearStoredSession();
+      return null;
+    }
+  };
+
+  // Authoritative role resolution. The official section registry is the source of truth
+  // for the fixed Layout roles, so a refresh / token-refresh can never downgrade an
+  // Editor or Deputy to "Layout Staff Member" just because the DB profile role is empty.
+  const resolveRoleForEmail = (
+    email: string,
+    profileRole?: string | null,
+    storedRole?: UserRole,
+    fallbackRole: UserRole = "Layout Staff Member"
+  ): UserRole => {
+    const normalized = normalizeEmail(email || "").toLowerCase();
+    const registryRole = OFFICIAL_MEMBERS_MAP[normalized]?.role;
+    return (registryRole ?? (profileRole as UserRole | undefined) ?? storedRole ?? fallbackRole) as UserRole;
+  };
+
+  // The official registry name wins so restored sessions drop stale name formats
+  // (e.g. the old "LAST - First" prefix) without needing a fresh login.
+  const resolveDisplayName = (email: string, storedName?: string) =>
+    OFFICIAL_MEMBERS_MAP[normalizeEmail(email || "").toLowerCase()]?.displayName || storedName || "";
+
+  const applyAuthenticatedUser = async (email: string, fallbackRole: UserRole, fallbackName: string) => {
+    const normalizedEmail = normalizeEmail(email);
+    const profile = await fetchUserProfileByEmail(normalizedEmail);
+
+    // Preserve the role the user actually logged in with. Auth events such as
+    // TOKEN_REFRESHED (fired when a background tab regains focus) re-run this with a
+    // generic fallback role, so without this the account would silently downgrade.
+    const stored = restoreStoredSession();
+    const storedRole =
+      stored && normalizeEmail(stored.email ?? "").toLowerCase() === normalizedEmail.toLowerCase()
+        ? (stored.role as UserRole | undefined)
+        : undefined;
+
+    const resolvedRole = resolveRoleForEmail(normalizedEmail, profile?.role, storedRole, fallbackRole);
+    // The official registry name matches what the login screen shows, so a refresh or
+    // token-refresh in a background tab can never swap the display name for the email.
+    const storedName =
+      stored && normalizeEmail(stored.email ?? "").toLowerCase() === normalizedEmail.toLowerCase()
+        ? stored.name
+        : undefined;
+    const resolvedName =
+      resolveDisplayName(normalizedEmail, storedName) ||
+      profile?.full_name ||
+      fallbackName ||
+      normalizedEmail;
+
+    setUserRole(resolvedRole);
+    setUserName(resolvedName);
+    setUserEmail(normalizedEmail);
     setIsAuthenticated(true);
-    setActiveTab("dashboard");
+    // Only land on the dashboard for a fresh sign-in. Background auth events
+    // (token refresh after inactivity) re-run this and would otherwise yank the
+    // user back from whatever tab they were on.
+    if (!wasAuthenticatedRef.current) setActiveTab("dashboard");
+    wasAuthenticatedRef.current = true;
+    persistSessionState(normalizedEmail, resolvedRole, resolvedName);
   };
 
-  const handleLogout = () => {
+  const handleLogin = async (role: UserRole, name: string, email: string) => {
+    await applyAuthenticatedUser(email, role, name);
+  };
+
+  const handleLogout = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    clearStoredSession();
+    wasAuthenticatedRef.current = false;
     setIsAuthenticated(false);
+    setUserRole("Layout Staff Member");
+    setUserEmail("");
+    setUserName("");
   };
 
-  const handleAddCommentSimple = (commentText: string, taskId: string) => {
+  // Record the "last opened" timestamp once per app load for the signed-in member.
+  // Visible only to Editor/Deputy in the Layout Member Directory.
+  useEffect(() => {
+    if (!isAuthenticated || !userEmail || memberLoginRecordedRef.current) return;
+    memberLoginRecordedRef.current = true;
+    void recordMemberLogin(userEmail).then((updated) => {
+      if (updated) setMemberLogins(updated);
+    });
+  }, [isAuthenticated, userEmail]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const updateLastActivity = () => {
+      const currentSession = restoreStoredSession();
+      if (!currentSession) {
+        void handleLogout();
+        return;
+      }
+
+      const updated = {
+        ...currentSession,
+        lastActivityAt: Date.now(),
+      };
+      try {
+        localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(updated));
+      } catch {
+        // ignore storage errors
+      }
+    };
+
+    const checkSessionExpiry = () => {
+      const currentSession = restoreStoredSession();
+      if (!currentSession) {
+        void handleLogout();
+        return;
+      }
+
+      if (Date.now() - (currentSession.lastActivityAt ?? Date.now()) > SIX_HOURS_MS) {
+        void handleLogout();
+      }
+    };
+
+    const events: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "click", "touchstart", "scroll", "mousemove"];
+    events.forEach((eventName) => {
+      window.addEventListener(eventName, updateLastActivity);
+    });
+
+    const timer = window.setInterval(checkSessionExpiry, 60000);
+    updateLastActivity();
+
+    return () => {
+      window.clearInterval(timer);
+      events.forEach((eventName) => {
+        window.removeEventListener(eventName, updateLastActivity);
+      });
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!supabase) {
+      const storedSession = restoreStoredSession();
+      if (storedSession) {
+        setUserRole(resolveRoleForEmail(storedSession.email ?? "", null, storedSession.role as UserRole));
+        setUserName(resolveDisplayName(storedSession.email ?? "", storedSession.name));
+        setUserEmail(storedSession.email ?? "");
+        setIsAuthenticated(true);
+        setActiveTab("dashboard");
+      }
+      return;
+    }
+
+    let active = true;
+
+    const restoreSupabaseSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      const storedSession = restoreStoredSession();
+
+      if (!active) return;
+
+      if (storedSession) {
+        setUserRole(resolveRoleForEmail(storedSession.email ?? "", null, storedSession.role as UserRole));
+        setUserName(resolveDisplayName(storedSession.email ?? "", storedSession.name));
+        setUserEmail(storedSession.email ?? "");
+        setIsAuthenticated(true);
+        setActiveTab("dashboard");
+        return;
+      }
+
+      if (!data.session?.user?.email) return;
+      await applyAuthenticatedUser(
+        data.session.user.email,
+        "Layout Staff Member",
+        data.session.user.user_metadata?.full_name || data.session.user.email,
+      );
+    };
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!active) return;
+
+      if (session?.user?.email) {
+        await applyAuthenticatedUser(
+          session.user.email,
+          "Layout Staff Member",
+          session.user.user_metadata?.full_name || session.user.email,
+        );
+        return;
+      }
+
+      // Only an explicit sign-out should clear the local session. Transient events with a
+      // null session (e.g. a TOKEN_REFRESHED race on tab focus) must not log the user out
+      // or downgrade their role — the restored localStorage session stays authoritative.
+      if (event === "SIGNED_OUT") {
+        clearStoredSession();
+        setIsAuthenticated(false);
+        setUserRole("Layout Staff Member");
+        setUserEmail("");
+        setUserName("");
+      }
+    });
+
+    void restoreSupabaseSession();
+
+    return () => {
+      active = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleAddCommentSimple = (commentText: string, taskId: string, images: string[] = []) => {
     const newComment: TaskComment = {
-      id: `comment-${Date.now()}`,
+      id: crypto.randomUUID(),
       taskId,
       authorName: userName,
       authorEmail: userEmail,
       text: commentText,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      ...(images.length ? { images } : {})
     };
-    const updated = [...comments, newComment];
-    setComments(updated);
-    pushStateToBackend({ comments: updated });
+    setComments((prev) => [...prev, newComment]);
+    createComment(newComment).then((saved) => {
+      if (saved) setComments((prev) => prev.map((comment) => comment.id === newComment.id ? saved : comment));
+    }).catch(() => {});
+
+    // Alert only the people this comment concerns: the assigned artist when a
+    // leader reviews, or the editor/deputy desk when a staffer replies.
+    const task = tasksRef.current.find(t => t.id === taskId);
+    if (task) {
+      const isLeader = userRole === "Layout Editor" || userRole === "Layout Deputy" || userRole === "Online Layout Head";
+      const assigneeEmail = task.assigneeEmail || resolveMemberEmail(task.illusLayout);
+      if (isLeader) {
+        if (assigneeEmail && assigneeEmail.toLowerCase() !== userEmail.toLowerCase()) {
+          handleAddNotification(
+            "New Comment",
+            `The ${userRole === "Layout Deputy" ? "layout deputy" : "layout editor"} commented on '${task.title}'. Kindly check 'My Assignments'.`,
+            "info",
+            [assigneeEmail]
+          );
+        }
+      } else {
+        handleAddNotification(
+          "New Comment",
+          `${getPreferredFirstName(userName, userEmail)} commented on '${task.title}'.`,
+          "info",
+          getEditorDeputyEmails()
+        );
+      }
+    }
   };
 
-  const handleAddNotification = (title: string, message: string, type: 'info' | 'assignment' | 'deadline' | 'revision' | 'poll' | 'birthday') => {
-    const notif: Notification = {
-      id: `notif-${Date.now()}`,
-      title,
-      message,
-      type,
-      timestamp: new Date().toISOString(),
-      readBy: []
-    };
-    const nextNotifs = [notif, ...notifications];
-    setNotifications(nextNotifs);
-    pushStateToBackend({ notifications: nextNotifs });
+  const handleAddNotification = (
+    title: string,
+    message: string,
+    type: 'info' | 'assignment' | 'deadline' | 'revision' | 'poll' | 'birthday',
+    targetEmails?: string[]
+  ) => {
+    const targets = Array.from(new Set(
+      (targetEmails && targetEmails.length ? targetEmails : [userEmail]).filter(Boolean)
+    ));
+    const timestamp = new Date().toISOString();
+    targets.forEach((email, idx) => {
+      const notif: Notification = {
+        id: `notif-${Date.now()}-${idx}`,
+        title,
+        message,
+        type,
+        timestamp,
+        readBy: [],
+        targetEmails: [email]
+      };
+      if (email.toLowerCase() === userEmail.toLowerCase()) {
+        setNotifications(prev => [notif, ...prev]);
+      }
+      createNotification(notif).catch(() => {});
+    });
   };
+
+  // The bell feed only ever shows alerts addressed to the signed-in account.
+  const myNotifications = notifications.filter(n =>
+    (n.targetEmails || []).some(email => email.toLowerCase() === userEmail.toLowerCase())
+  );
 
   const updateIssueRow = (id: string, field: "page" | "section" | "title" | "writer" | "graphics" | "layout" | "online" | "progress", value: string) => {
-    setIssueSheets((prev) => prev.map((sheet) => {
+    updateIssueSheets((prev) => prev.map((sheet) => {
       if (sheet.id !== currentIssueSheetId) return sheet;
       return {
         ...sheet,
@@ -326,10 +857,10 @@ export default function App() {
     }));
   };
 
-  const syncIssueRowTask = (row: { id: string; page: string; section: string; title: string; writer: string; graphics: string; layout: string; online: string; progress: string }) => {
+  const syncIssueRowTask = (row: { id: string; page: string; section: string; title: string; writer: string; graphics: string; layout: string; online: string; progress: string; draftLink?: string }) => {
     const rowTitle = row.title?.trim() || `${row.section || "Issue"}${row.page ? ` ${row.page}` : ""}`.trim() || `Issue Row ${row.id}`;
     if (!row.layout && !row.online && !row.title && !row.writer) {
-      setTasks((prev) => prev.filter((task: any) => task.sourceIssueRowId !== row.id));
+      commitTasks((prev) => prev.filter((task: any) => task.sourceIssueRowId !== row.id));
       return;
     }
 
@@ -341,7 +872,7 @@ export default function App() {
       id: `issue-task-${row.id}`,
       title: rowTitle,
       typeOfRelease: "Issue Article",
-      typeOfContent: row.section || "News",
+      typeOfContent: normalizeContentCategory(row.section || "News"),
       writer: row.writer || "Unspecified Writer",
       illusLayout: assignee,
       progress: taskProgress,
@@ -352,16 +883,18 @@ export default function App() {
       commentsCount: 0,
       revisionCount: 0,
       lastUpdated: new Date().toISOString(),
-      canvaLink: "",
+      canvaLink: getCanvaLinkForContent(row.section || "News"),
+      mediumCanvaLink: undefined,
       pubmatLink: "",
-      draftLink: "",
+      draftLink: row.draftLink || "",
       addedToLayout: "",
       onlineHandler: row.online || "",
       ...(row.online ? { graphics: row.online } : {}),
       sourceIssueRowId: row.id,
+      sourceSheetTitle: issueSheetTitle,
     } as Task & { sourceIssueRowId?: string };
 
-    setTasks((prev) => {
+    commitTasks((prev) => {
       const filtered = prev.filter((task: any) => task.sourceIssueRowId !== row.id);
       return [newTask, ...filtered];
     });
@@ -380,7 +913,7 @@ export default function App() {
       progress: "Pending"
     };
 
-    setIssueSheets((prev) => prev.map((sheet) => {
+    updateIssueSheets((prev) => prev.map((sheet) => {
       if (sheet.id !== currentIssueSheetId) return sheet;
       return { ...sheet, rows: [...sheet.rows, nextRow] };
     }));
@@ -394,23 +927,28 @@ export default function App() {
   const saveIssueRowEditor = () => {
     if (!editingIssueRowId || !issueRowDraft) return;
 
-    setIssueSheets((prev) => prev.map((sheet) => {
+    const nextSheets = issueSheetsRef.current.map((sheet) => {
       if (sheet.id !== currentIssueSheetId) return sheet;
       return {
         ...sheet,
         rows: sheet.rows.map((row) => row.id === editingIssueRowId ? { ...issueRowDraft } : row)
       };
-    }));
+    });
+    persistIssueSheets(nextSheets);
 
     const rowTitle = issueRowDraft.title?.trim() || `${issueRowDraft.section || "Issue"}${issueRowDraft.page ? ` ${issueRowDraft.page}` : ""}`.trim() || `Issue Row ${issueRowDraft.id}`;
-    const assignee = issueRowDraft.online?.trim() || issueRowDraft.layout?.trim() || "Unassigned";
-    const newPendingTask: Task & { sourceIssueRowId?: string } = {
-      id: `issue-pending-${issueRowDraft.id}`,
+    const layoutAssignee = issueRowDraft.layout?.trim() || "Unassigned";
+    const resolved = resolveLayoutAssignee(layoutAssignee, members);
+    const pendingId = seededUuid(`issue-pending-${issueRowDraft.id}`);
+    const newPendingTask: Task = {
+      id: pendingId,
       title: rowTitle,
       typeOfRelease: "Online Article",
-      typeOfContent: issueRowDraft.section || "News",
+      typeOfContent: normalizeContentCategory(issueRowDraft.section || "News"),
       writer: issueRowDraft.writer || "Unspecified Writer",
-      illusLayout: assignee,
+      illusLayout: resolved.name,
+      assigneeEmail: resolved.email,
+      assigneeName: resolved.name,
       graphics: issueRowDraft.graphics || "",
       graphicsIllus: issueRowDraft.graphics || "",
       progress: "Assigned",
@@ -421,17 +959,24 @@ export default function App() {
       commentsCount: 0,
       revisionCount: 0,
       lastUpdated: new Date().toISOString(),
-      canvaLink: "",
+      canvaLink: getCanvaLinkForContent(issueRowDraft.section || "News"),
+      mediumCanvaLink: undefined,
       pubmatLink: "",
-      draftLink: "",
+      draftLink: issueRowDraft.draftLink || "",
       addedToLayout: "",
-      onlineHandler: assignee,
+      onlineHandler: issueRowDraft.online || "",
       isPendingConfirmation: true,
       sourceIssueRowId: issueRowDraft.id,
+      sourceSheetTitle: issueSheetTitle,
     };
 
-    setTasks((prev) => {
-      const filtered = prev.filter((task: any) => task.sourceIssueRowId !== issueRowDraft.id && task.id !== `issue-pending-${issueRowDraft.id}`);
+    commitTasks((prev) => {
+      const filtered = prev.filter((task) =>
+        task.id !== seededUuid(`issue-pending-${issueRowDraft.id}`) &&
+        task.id !== seededUuid(`issue-task-${issueRowDraft.id}`) &&
+        task.id !== seededUuid(`online-task-${issueRowDraft.id}`) &&
+        task.sourceIssueRowId !== issueRowDraft.id
+      );
       return [newPendingTask, ...filtered];
     });
 
@@ -439,13 +984,39 @@ export default function App() {
     setIssueRowDraft(null);
   };
 
+  const cancelIssueTask = (task: Task) => {
+    commitTasks((prev) => prev.map((item) => item.id === task.id
+      ? { ...item, progress: "Shelved", lastUpdated: new Date().toISOString() }
+      : item
+    ));
+    if (task.sourceIssueRowId) {
+      updateIssueSheets((prev) => prev.map((sheet) => ({
+        ...sheet,
+        rows: sheet.rows.map((row) => row.id === task.sourceIssueRowId ? { ...row, progress: "Shelved" } : row)
+      })));
+    }
+  };
+
+  const removeIssueTask = (task: Task) => {
+    const sourceRowId = task.sourceIssueRowId;
+    if (sourceRowId) {
+      updateIssueSheets((prev) => prev.map((sheet) => ({
+        ...sheet,
+        rows: sheet.rows.map((row) => row.id === sourceRowId ? { ...row, layout: "" } : row)
+      })));
+    }
+    commitTasks((prev) => prev.filter((item) =>
+      item.id !== task.id && !(sourceRowId && item.sourceIssueRowId === sourceRowId && item.typeOfRelease === "Issue Article")
+    ));
+  };
+
   const deleteIssueRow = (rowId: string) => {
-    setIssueSheets((prev) => prev.map((sheet) => {
+    updateIssueSheets((prev) => prev.map((sheet) => {
       if (sheet.id !== currentIssueSheetId) return sheet;
       return { ...sheet, rows: sheet.rows.filter((row) => row.id !== rowId) };
     }));
 
-    setTasks((prev) => prev.filter((task: any) => task.sourceIssueRowId !== rowId));
+    commitTasks((prev) => prev.filter((task: any) => task.sourceIssueRowId !== rowId));
     if (editingIssueRowId === rowId) {
       setEditingIssueRowId(null);
       setIssueRowDraft(null);
@@ -456,15 +1027,15 @@ export default function App() {
     const nextId = `issue-sheet-${Date.now()}`;
     const nextSheet = {
       id: nextId,
-      title: `Issue Publication Sheet ${issueSheets.length + 1}`,
+      title: `Issue Pages Sheet ${issueSheets.length + 1}`,
       rows: []
     };
-    setIssueSheets((prev) => [...prev, nextSheet]);
+    updateIssueSheets((prev) => [...prev, nextSheet]);
     setCurrentIssueSheetId(nextId);
   };
 
   const deleteIssueSheet = (sheetId: string) => {
-    setIssueSheets((prev) => {
+    updateIssueSheets((prev) => {
       if (prev.length <= 1) return prev;
       const remaining = prev.filter((sheet) => sheet.id !== sheetId);
       if (remaining.length > 0) {
@@ -472,13 +1043,6 @@ export default function App() {
       }
       return remaining;
     });
-  };
-
-  const removeIssueRow = (id: string) => {
-    setIssueSheets((prev) => prev.map((sheet) => {
-      if (sheet.id !== currentIssueSheetId) return sheet;
-      return { ...sheet, rows: sheet.rows.filter((row) => row.id !== id) };
-    }));
   };
 
   useEffect(() => {
@@ -498,7 +1062,7 @@ export default function App() {
       case "Layout Editor":
         return [
           { id: "dashboard", label: "Home", icon: LayoutGrid },
-          { id: "issue-publication", label: "Publication Issue", icon: BookOpen },
+          { id: "issue-publication", label: "Issue Pages", icon: BookOpen },
           { id: "online-pubmat", label: "Online Pubmat", icon: Kanban },
           { id: "review-submissions", label: "Review Submissions", icon: ShieldCheck },
           { id: "canva-directory", label: "Canva Template Directory", icon: Link2 },
@@ -509,6 +1073,7 @@ export default function App() {
       case "Online Layout Head":
         return [
           { id: "dashboard", label: "Home", icon: LayoutGrid },
+          { id: "my-assignments", label: "My Assignments", icon: Kanban },
           { id: "online-pubmat", label: "Online Pubmat", icon: Kanban },
           { id: "review-submissions", label: "Review Submissions", icon: ShieldCheck },
           { id: "canva-directory", label: "Canva Template Directory", icon: Link2 },
@@ -566,17 +1131,25 @@ export default function App() {
   const executeCreateAssignment = () => {
     if (!formTitle.trim()) return;
 
-    const finalAddedToLayout = formDocLink 
-      ? `=HYPERLINK("${formDocLink}", "${formTitle}")` 
+    const finalAddedToLayout = formDocLink
+      ? `=HYPERLINK("${formDocLink}", "${formTitle}")`
       : "";
 
+    const selectedArtist = layoutArtistOptions.find((option) => option.value === formArtist);
+    const resolvedAssignee = resolveLayoutAssignee(resolvedFormArtist, members);
+    // Category names are unique across the directory, so the first name/id
+    // match is the template whose link gets attached to the new task.
+    const normalizedContentType = normalizeContentCategory(formContentType);
+    const autoCanvaLink = getCanvaLinkForContent(normalizedContentType);
     const created: Task = {
-      id: `task-${Date.now()}`,
+      id: crypto.randomUUID(),
       title: formTitle,
       typeOfRelease: formReleaseType,
-      typeOfContent: formContentType,
+      typeOfContent: normalizedContentType,
       writer: formWriter || "Unspecified Writer",
       illusLayout: resolvedFormArtist,
+      assigneeEmail: selectedArtist?.email || resolvedAssignee.email || "",
+      assigneeName: selectedArtist?.label || resolvedAssignee.name || resolvedFormArtist,
       progress: resolvedFormArtist === "Unassigned" ? "Not Started" : "Assigned",
       writeup: formWriteup || formTitle || "drafting",
       priority: formPriority,
@@ -585,7 +1158,8 @@ export default function App() {
       commentsCount: 0,
       revisionCount: 0,
       lastUpdated: new Date().toISOString(),
-      canvaLink: formCanvaLink || "",
+      canvaLink: autoCanvaLink,
+      mediumCanvaLink: formReleaseType === "Online Article" ? MEDIUM_CANVA_LINK : undefined,
       pubmatLink: formPubmatLink || "",
       draftLink: formDocLink || "",
       addedToLayout: finalAddedToLayout,
@@ -598,31 +1172,26 @@ export default function App() {
     if (formReleaseType === "Issue Article") {
       const onlineCompanion: Task = {
         ...created,
-        id: `task-${Date.now()}-online`,
+        id: crypto.randomUUID(),
         title: `${formTitle} (Online Pubmat)`,
         typeOfRelease: "Online Article",
+        mediumCanvaLink: MEDIUM_CANVA_LINK,
         isPendingConfirmation: false
       };
       nextTasks = [onlineCompanion, ...nextTasks];
     }
 
-    setTasks(nextTasks);
+    commitTasks(() => nextTasks);
 
-    // Push Notification
-    if (formArtist !== "Unassigned") {
-      const notif: Notification = {
-        id: `notif-${Date.now()}`,
-        title: "New Layout Assignment",
-        message: `You have been assigned to layout '${formTitle}' targeting ${formReleaseDate}.` + (formCanvaLink ? ` Canva link: ${formCanvaLink}` : ''),
-        type: "assignment",
-        timestamp: new Date().toISOString(),
-        readBy: []
-      };
-      const nextNotifs = [notif, ...notifications];
-      setNotifications(nextNotifs);
-      pushStateToBackend({ tasks: nextTasks, notifications: nextNotifs });
-    } else {
-      pushStateToBackend({ tasks: nextTasks });
+    // Push Notification — targeted only at the assigned account, kept short.
+    const assigneeEmail = created.assigneeEmail;
+    if (formArtist !== "Unassigned" && assigneeEmail) {
+      handleAddNotification(
+        "New Assignment",
+        `You've been assigned '${formTitle}' (due ${formReleaseDate || "TBD"}). Check 'My Assignments'.`,
+        "assignment",
+        [assigneeEmail]
+      );
     }
 
     // Reset Form
@@ -630,7 +1199,6 @@ export default function App() {
     setFormDocLink("");
     setFormWriter("");
     setFormWriteup("");
-    setFormCanvaLink("");
     setFormPubmatLink("");
     setShowTaskForm(false);
   };
@@ -657,9 +1225,9 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <LoginPage 
-        members={members} 
-        onLogin={handleLogin} 
+      <LoginPage
+        members={members}
+        onLogin={handleLogin}
         speechEnabled={speechEnabled}
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
@@ -670,20 +1238,20 @@ export default function App() {
   const roleTabs = getTabsForRole();
 
   return (
-    <div 
+    <div
       className="min-h-screen bg-[#faf9f6] dark:bg-neutral-950 grid-lines-bg flex flex-col md:flex-row text-neutral-900 dark:text-neutral-100 transition-colors"
       style={{ fontSize: `${fontSizeMultiplier}rem` }}
     >
       {/* --- DESKTOP LEFT SIDEBAR (Premium Maroon Gradient Design) --- */}
       <aside className="w-72 shrink-0 bg-neutral-950 text-white rounded-[28px] p-6 m-4 hidden md:flex flex-col justify-between border border-neutral-900 shadow-xl h-[calc(100vh-2rem)] sticky top-4 z-30">
-        
+
         <div className="space-y-6 flex flex-col h-full overflow-hidden">
           {/* Logo Title Block */}
           <div className="flex items-center gap-3.5 pb-5 border-b border-neutral-900">
-            <img 
-              src={mkuleImg} 
-              alt="MKule Logo" 
-              className="w-14 h-14 object-contain shrink-0 rounded-2xl p-1 bg-neutral-900 border border-neutral-800 shadow-md" 
+            <img
+              src={mkuleImg}
+              alt="MKule Logo"
+              className="w-14 h-14 object-contain shrink-0 rounded-2xl p-1 bg-neutral-900 border border-neutral-800 shadow-md"
             />
             <div className="text-left min-w-0 flex flex-col justify-center">
               <h1 className="font-sans font-black text-lg tracking-tight text-white leading-tight">
@@ -712,8 +1280,8 @@ export default function App() {
                     }
                   }}
                   className={`w-full px-4 py-3 rounded-2xl text-xs font-bold tracking-wide flex items-center gap-3 transition-all cursor-pointer text-left ${
-                    isActive 
-                      ? "bg-gradient-to-r from-[#bc1700] to-[#660000] text-white font-black shadow-lg shadow-red-950/40 border-l-4 border-white" 
+                    isActive
+                      ? "bg-gradient-to-r from-brand-maroon to-brand-maroon-dark text-white font-black shadow-lg shadow-red-950/40 border-l-4 border-white"
                       : "text-neutral-400 hover:text-white hover:bg-neutral-900/80"
                   }`}
                 >
@@ -727,14 +1295,14 @@ export default function App() {
 
         {/* User Signature badge at the bottom of the sidebar */}
         <div className="pt-4 border-t border-neutral-900 flex items-center gap-2.5 text-left mt-4 shrink-0">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#bc1700] to-[#660000] border border-red-500/20 flex items-center justify-center text-xs font-bold text-white uppercase font-sans shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-maroon to-brand-maroon-dark border border-red-500/20 flex items-center justify-center text-xs font-bold text-white uppercase font-sans shrink-0">
             {userName.charAt(0)}
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-white truncate">{userName}</p>
             <p className="text-[10px] text-neutral-400 truncate font-sans">{userRole}</p>
           </div>
-          <button 
+          <button
             onClick={handleLogout}
             className="text-[10px] text-red-400 hover:text-red-300 font-bold font-sans uppercase bg-neutral-900 px-2.5 py-1 rounded-lg border border-neutral-800 shrink-0 cursor-pointer"
             title="Log out of session"
@@ -747,7 +1315,7 @@ export default function App() {
       {/* --- MOBILE RESPONSIVE TOP HEADER --- */}
       <header className="md:hidden flex justify-between items-center px-4 py-3 bg-neutral-950 text-white sticky top-0 z-40 shadow-md">
         <div className="flex items-center gap-2">
-          <button 
+          <button
             onClick={() => setShowMobileSidebar(!showMobileSidebar)}
             className="p-1.5 hover:bg-neutral-900 rounded-lg text-white cursor-pointer"
             aria-label="Toggle mobile menu"
@@ -778,7 +1346,7 @@ export default function App() {
             {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-neutral-300" />}
           </button>
 
-          <button 
+          <button
             onClick={handleLogout}
             className="p-1.5 text-neutral-400 hover:text-red-400 rounded-lg cursor-pointer"
             title="Log out"
@@ -793,7 +1361,7 @@ export default function App() {
         {showMobileSidebar && (
           <>
             {/* Backdrop */}
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 0.5 }}
               exit={{ opacity: 0 }}
@@ -801,7 +1369,7 @@ export default function App() {
               className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 md:hidden"
             />
             {/* Mobile Dropdown from Top Header */}
-            <motion.div 
+            <motion.div
               initial={{ y: -30, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: -20, opacity: 0 }}
@@ -813,7 +1381,7 @@ export default function App() {
                   <img src={mkuleImg} alt="MKule Logo" className="w-7 h-7 object-contain shrink-0" />
                   <span className="font-sans font-black text-sm text-white tracking-tight">MKuLayout</span>
                 </div>
-                <button 
+                <button
                   onClick={() => setShowMobileSidebar(false)}
                   className="p-1.5 hover:bg-neutral-900 rounded-lg text-neutral-400 hover:text-white"
                   aria-label="Close menu"
@@ -834,8 +1402,8 @@ export default function App() {
                         setShowMobileSidebar(false);
                       }}
                       className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-bold tracking-wide flex items-center gap-3 transition-all text-left cursor-pointer ${
-                        isActive 
-                          ? "bg-gradient-to-r from-[#bc1700] to-[#660000] text-white shadow-sm" 
+                        isActive
+                          ? "bg-gradient-to-r from-brand-maroon to-brand-maroon-dark text-white shadow-sm"
                           : "text-neutral-300 hover:text-white hover:bg-neutral-900"
                       }`}
                     >
@@ -851,7 +1419,7 @@ export default function App() {
                   <p className="text-xs font-bold text-white">{userName}</p>
                   <p className="text-[10px] text-neutral-400 font-sans">{userRole}</p>
                 </div>
-                <button 
+                <button
                   onClick={() => {
                     setShowMobileSidebar(false);
                     handleLogout();
@@ -868,11 +1436,11 @@ export default function App() {
       </AnimatePresence>
 
       {/* --- RIGHT COLUMN CONTAINER (Jobie mockup style main hub) --- */}
-      <div className="flex-1 flex flex-col min-w-0 md:h-screen md:overflow-y-auto p-1.5 sm:p-3 md:p-5 space-y-2 sm:space-y-3 md:space-y-4">
-        
+      <div className="flex-1 flex flex-col min-w-0 md:h-screen md:overflow-y-auto p-2.5 sm:p-3 md:p-5 space-y-3 sm:space-y-3 md:space-y-4">
+
         {/* RIGHT TOP CONTROL BAR (Minimalist, Accessible) */}
         <div className="flex flex-col sm:flex-row items-center justify-between bg-white dark:bg-neutral-900 border border-neutral-150 dark:border-neutral-800 rounded-xl sm:rounded-2xl px-3 sm:px-5 py-2 sm:py-3 shadow-sm gap-2 sm:gap-3 shrink-0">
-          
+
           {/* Left info status indicator */}
           <div className="flex items-center gap-2 sm:gap-2.5 w-full sm:w-auto">
             <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-red-600 animate-pulse shrink-0" />
@@ -885,7 +1453,47 @@ export default function App() {
 
           {/* Right actions: Theme toggle, Accessibility controls & Alerts dropdown */}
           <div className="flex items-center gap-1.5 sm:gap-3 w-full sm:w-auto justify-end">
-            
+
+            {/* Shared tracker sheets (Editor & Deputy only) */}
+            {(userRole === "Layout Editor" || userRole === "Layout Deputy") && (
+              <>
+                <a
+                  href="https://docs.google.com/spreadsheets/d/1JxkhO7sUrQxG6-1ISIXFSudRTDhRIEBcCZEJXPZQxEA/edit?usp=sharing"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-800 dark:hover:bg-neutral-700 rounded-xl text-neutral-600 dark:text-neutral-200 hover:text-neutral-900 dark:hover:text-neutral-50 border border-neutral-200 dark:border-neutral-700 transition-all flex items-center gap-1.5 shadow-xs"
+                  title="Open the Releases tracker spreadsheet"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span className="hidden sm:inline font-mono text-[11px] font-semibold">Releases Tracker</span>
+                </a>
+                <a
+                  href="https://docs.google.com/spreadsheets/d/1k3utzr6pjtYUwaveVIVVOIbL85qI_7YamQ1V4E0tq9E/edit?usp=sharing"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-800 dark:hover:bg-neutral-700 rounded-xl text-neutral-600 dark:text-neutral-200 hover:text-neutral-900 dark:hover:text-neutral-50 border border-neutral-200 dark:border-neutral-700 transition-all flex items-center gap-1.5 shadow-xs"
+                  title="Open the Master tracker spreadsheet"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <span className="hidden sm:inline font-mono text-[11px] font-semibold">Master Tracker</span>
+                </a>
+              </>
+            )}
+
+            {/* Live current date & time */}
+            <div
+              className="px-2.5 py-1.5 bg-neutral-50 dark:bg-neutral-800 rounded-xl border border-neutral-200 dark:border-neutral-700 text-right shadow-xs select-none"
+              title="Current date and time"
+              aria-label={`Current date and time ${currentDateTime.toLocaleString()}`}
+            >
+              <p className="font-mono text-[11px] sm:text-xs font-bold text-neutral-800 dark:text-neutral-100 leading-tight tabular-nums">
+                {currentDateTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </p>
+              <p className="font-mono text-[9px] sm:text-[10px] text-neutral-500 dark:text-neutral-400 leading-tight">
+                {currentDateTime.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
+              </p>
+            </div>
+
             {/* Direct Theme Toggle Button */}
             <button
               type="button"
@@ -916,31 +1524,45 @@ export default function App() {
                 aria-label="Notification center"
               >
                 <Bell className="w-4 h-4" />
-                {notifications.length > 0 && (
+                {myNotifications.length > 0 && (
                   <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-600 rounded-full animate-ping" />
                 )}
               </button>
 
               {showNotificationsDropdown && (
-                <div 
+                <div
                   id="notifications-popup"
                   className="absolute right-0 mt-2 w-72 bg-white dark:bg-neutral-900 rounded-2xl shadow-xl border border-neutral-100 dark:border-neutral-800 p-4 space-y-3 z-50 text-left text-xs"
                 >
                   <div className="flex items-center justify-between border-b pb-1.5 border-neutral-100 dark:border-neutral-800">
-                    <h3 className="font-bold text-neutral-900 dark:text-neutral-100 font-display">Alert Feed</h3>
-                    <button 
-                      onClick={() => setNotifications([])}
-                      className="text-[10px] text-red-700 dark:text-red-400 hover:underline font-bold cursor-pointer"
-                    >
-                      Clear
-                    </button>
+                    <h3 className="font-bold text-neutral-900 dark:text-neutral-100 font-display">Notifications</h3>
+                    <div className="flex items-center gap-2">
+                      {(userRole === "Layout Editor" || userRole === "Layout Deputy" || userRole === "Online Layout Head") && (
+                        <button
+                          onClick={async () => {
+                            if (!window.confirm("Clear all notifications for everyone?")) return;
+                            await clearNotifications();
+                            setNotifications([]);
+                          }}
+                          className="text-[10px] text-red-700 dark:text-red-400 hover:underline font-bold cursor-pointer"
+                        >
+                          Clear all
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setNotifications(prev => prev.filter(n => !(n.targetEmails || []).some(email => email.toLowerCase() === userEmail.toLowerCase())))}
+                        className="text-[10px] text-red-700 dark:text-red-400 hover:underline font-bold cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {notifications.length === 0 ? (
+                    {myNotifications.length === 0 ? (
                       <p className="text-neutral-400 dark:text-neutral-500 py-4 text-center">No recent alerts.</p>
                     ) : (
-                      notifications.slice(0, 4).map((n) => (
+                      myNotifications.slice(0, 4).map((n) => (
                         <div key={n.id} className="p-2 bg-neutral-50 dark:bg-neutral-800 rounded-xl border border-neutral-100 dark:border-neutral-700">
                           <h4 className="font-semibold text-neutral-800 dark:text-neutral-200">{n.title}</h4>
                           <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 leading-normal">{n.message}</p>
@@ -1003,6 +1625,8 @@ export default function App() {
                   handleUpdateTasks(updatedList);
                 }}
                 onAddComment={handleAddCommentSimple}
+                onUpdateComment={handleUpdateComment}
+                onRemoveComment={handleRemoveComment}
                 comments={comments}
                 onAddNotification={handleAddNotification}
               />
@@ -1030,8 +1654,8 @@ export default function App() {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-neutral-100 dark:border-neutral-800">
                   <div>
                     <h3 className="font-sans font-black text-neutral-900 dark:text-neutral-100 text-base sm:text-lg flex items-center gap-2">
-                      <BookOpen className="w-4 h-4 text-[#bc1700]" />
-                      Publication Issue
+                      <BookOpen className="w-4 h-4 text-brand-maroon" />
+                      Issue Pages
                     </h3>
                     <p className="text-[10px] sm:text-xs text-neutral-500 dark:text-neutral-400">
                       Manual publication planning sheet for issue assignment and tracking.
@@ -1049,7 +1673,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={addIssueRow}
-                      className="px-3 py-1.5 bg-[#bc1700] hover:bg-[#8e1200] text-white text-[10px] sm:text-xs font-bold rounded-xl cursor-pointer"
+                      className="px-3 py-1.5 bg-brand-maroon hover:bg-brand-maroon-dark text-white text-[10px] sm:text-xs font-bold rounded-xl cursor-pointer"
                     >
                       + Add Row
                     </button>
@@ -1065,7 +1689,7 @@ export default function App() {
                           onClick={() => setCurrentIssueSheetId(sheet.id)}
                           className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
                             sheet.id === currentIssueSheetId
-                              ? "bg-[#bc1700] text-white border-[#bc1700]"
+                              ? "bg-brand-maroon text-white border-brand-maroon"
                               : "bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200 border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800"
                           }`}
                         >
@@ -1090,7 +1714,7 @@ export default function App() {
                   <input
                     type="text"
                     value={issueSheetTitle}
-                    onChange={(e) => setIssueSheets((prev) => prev.map((sheet) => (
+                    onChange={(e) => updateIssueSheets((prev) => prev.map((sheet) => (
                       sheet.id === currentIssueSheetId ? { ...sheet, title: e.target.value } : sheet
                     )))}
                     className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none"
@@ -1099,7 +1723,7 @@ export default function App() {
 
                 <div className="overflow-x-auto rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800">
                   <div className="min-w-[920px]">
-                    <div className="grid grid-cols-[0.8fr_1.6fr_2.3fr_1.3fr_1.1fr_1.1fr_1.1fr_1.1fr] bg-[#bc1700] text-white text-[10px] font-black uppercase tracking-[0.12em]">
+                    <div className="grid grid-cols-[0.8fr_1.6fr_2.3fr_1.3fr_1.1fr_1.1fr_1.1fr_1.1fr] bg-brand-maroon text-white text-[10px] font-black uppercase tracking-[0.12em]">
                       <div className="px-2 py-2 border-r border-red-900/60">Page</div>
                       <div className="px-2 py-2 border-r border-red-900/60">Section or Content</div>
                       <div className="px-2 py-2 border-r border-red-900/60">Title or Summary</div>
@@ -1170,14 +1794,36 @@ export default function App() {
                             <span className="px-1.5 py-1 rounded-md bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-[10px] font-semibold text-neutral-700 dark:text-neutral-200">
                               {row.progress || "Pending"}
                             </span>
-                            <button
-                              type="button"
-                              onClick={() => deleteIssueRow(row.id)}
-                              className="text-neutral-400 hover:text-red-600 text-xs cursor-pointer ml-1"
-                              title="Remove row"
-                            >
-                              ✕
-                            </button>
+                            {confirmDeleteRowId === row.id ? (
+                              <span className="flex items-center gap-1 ml-1">
+                                <span className="text-[9px] font-bold text-red-600 dark:text-red-400 whitespace-nowrap">Are you sure?</span>
+                                <button
+                                  type="button"
+                                  onClick={() => { deleteIssueRow(row.id); setConfirmDeleteRowId(null); }}
+                                  className="px-1.5 py-0.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold cursor-pointer"
+                                  title="Confirm remove row"
+                                >
+                                  Yes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRowId(null)}
+                                  className="px-1.5 py-0.5 rounded-md bg-neutral-200 dark:bg-neutral-700 hover:bg-neutral-300 dark:hover:bg-neutral-600 text-neutral-700 dark:text-neutral-200 text-[10px] font-bold cursor-pointer"
+                                  title="Cancel"
+                                >
+                                  No
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteRowId(row.id)}
+                                className="text-neutral-400 hover:text-red-600 text-xs cursor-pointer ml-1"
+                                title="Remove row"
+                              >
+                                ✕
+                              </button>
+                            )}
                           </div>
                         </div>
                       ))
@@ -1191,7 +1837,7 @@ export default function App() {
                       <h4 className="font-sans font-black text-neutral-900 dark:text-neutral-100 text-sm">Issue Tasks</h4>
                       <p className="text-[10px] text-neutral-500 dark:text-neutral-400">Issue-only tasks that are dispatched from the publication planner and assigned to the layout team.</p>
                     </div>
-                    <span className="text-[10px] font-bold bg-[#bc1700]/10 text-[#bc1700] dark:text-red-400 px-2 py-1 rounded-full">
+                    <span className="text-[10px] font-bold bg-brand-maroon/10 text-brand-maroon dark:text-brand-maroon-light px-2 py-1 rounded-full">
                       {issueTaskCards.length} task{issueTaskCards.length === 1 ? "" : "s"}
                     </span>
                   </div>
@@ -1202,43 +1848,133 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
-                      {issueTaskCards.map((task) => (
-                        <button
+                      {issueTaskCards.map((task) => {
+                        const isDone = isCompletedTask(task);
+                        return (
+                        <div
                           key={task.id}
-                          type="button"
-                          onClick={() => setSelectedTask(task)}
-                          className="text-left bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-700 p-3 hover:border-[#bc1700]/60 hover:shadow-sm transition-all cursor-pointer"
+                          className={`rounded-xl sm:rounded-2xl p-3.5 sm:p-5 flex flex-col justify-between space-y-2.5 sm:space-y-4 text-left transition-all border ${
+                            isDone
+                              ? "opacity-55 bg-neutral-50 dark:bg-neutral-900/50 border-neutral-200 dark:border-neutral-800 hover:opacity-90"
+                              : "bg-white dark:bg-neutral-900 hover:shadow-md border-neutral-200 dark:border-neutral-700"
+                          }`}
                         >
-                          <div className="flex items-center justify-between gap-2 mb-2">
-                            <span className="px-2 py-0.5 rounded-full bg-[#bc1700]/10 text-[#bc1700] dark:text-red-400 text-[9px] font-black uppercase tracking-[0.12em]">
-                              {task.typeOfRelease || "Issue Article"}
-                            </span>
-                            <span className="text-[9px] font-bold uppercase tracking-[0.12em] text-neutral-500 dark:text-neutral-400">
-                              {task.priority || "Medium"}
-                            </span>
-                          </div>
-
-                          <h5 className="font-sans font-black text-sm text-neutral-900 dark:text-neutral-100 leading-tight mb-2">
-                            {task.title}
-                          </h5>
-
-                          <div className="grid grid-cols-2 gap-2 text-[10px] text-neutral-600 dark:text-neutral-300">
-                            <div>
-                              <span className="block text-[8px] uppercase tracking-[0.12em] text-neutral-400 mb-0.5">Writer</span>
-                              <span className="font-semibold">{task.writer || "Unspecified"}</span>
+                          <div className="space-y-2 sm:space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                                <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-brand-maroon/5 dark:bg-brand-maroon/20 text-brand-maroon dark:text-brand-maroon-light border border-brand-maroon/10 dark:border-brand-maroon/30">
+                                  {task.typeOfRelease || "Issue Article"}
+                                </span>
+                                {task.sourceSheetTitle && (
+                                  <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800">
+                                    {task.sourceSheetTitle}
+                                  </span>
+                                )}
+                              </div>
+                              <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded ${
+                                task.priority === "Urgent" ? "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800" :
+                                task.priority === "High" ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800" :
+                                task.priority === "Medium" ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800" :
+                                "bg-gray-100 dark:bg-neutral-800 text-gray-700 dark:text-neutral-300 border border-gray-200 dark:border-neutral-700"
+                              }`}>
+                                {task.priority || "Medium"} Priority
+                              </span>
                             </div>
+
                             <div>
-                              <span className="block text-[8px] uppercase tracking-[0.12em] text-neutral-400 mb-0.5">Layout</span>
-                              <span className="font-semibold">{task.illusLayout || "Unassigned"}</span>
+                              <h4
+                                className="font-bold text-gray-950 dark:text-neutral-100 text-xs sm:text-sm leading-snug hover:text-brand-maroon dark:hover:text-red-400 cursor-pointer transition-all"
+                                onClick={() => setSelectedTask(task)}
+                              >
+                                {task.title}
+                              </h4>
+                            </div>
+
+                            {task.canvaLink && (
+                              <div className="bg-cyan-50/60 dark:bg-cyan-950/40 border border-cyan-100 dark:border-cyan-800 p-1.5 sm:p-2 rounded-lg sm:rounded-xl flex items-center justify-between gap-2 text-[10px]">
+                                <span className="text-cyan-800 dark:text-cyan-300 font-medium truncate block flex-1 font-mono text-[9px] sm:text-[10px]">
+                                  {task.canvaLink}
+                                </span>
+                                <a
+                                  href={task.canvaLink}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-2 py-0.5 bg-cyan-600 hover:bg-cyan-700 text-white font-bold rounded-lg text-[8px] sm:text-[9px] flex items-center gap-0.5 shrink-0"
+                                >
+                                  Canva <ExternalLink className="w-2.5 h-2.5" />
+                                </a>
+                              </div>
+                            )}
+
+                            <div className="grid grid-cols-2 gap-1.5 sm:gap-2 pt-1.5 sm:pt-2 border-t border-gray-100 dark:border-neutral-800 text-[11px] sm:text-xs">
+                              <div>
+                                <span className="text-[9px] sm:text-[10px] text-gray-400 dark:text-neutral-400 uppercase font-semibold block">Writer</span>
+                                <span className="font-bold text-gray-700 dark:text-neutral-200 truncate block">{task.writer || "Unspecified"}</span>
+                              </div>
+                              <div>
+                                <span className="text-[9px] sm:text-[10px] text-gray-400 dark:text-neutral-400 uppercase font-semibold block">Layout Artist</span>
+                                <span className="font-bold text-gray-700 dark:text-neutral-200 truncate block flex items-center gap-1">
+                                  <User className="w-3 h-3 text-brand-maroon dark:text-brand-maroon-light shrink-0" />
+                                  <span className="truncate">{task.illusLayout || "Unassigned"}</span>
+                                </span>
+                              </div>
                             </div>
                           </div>
 
-                          <div className="mt-2 flex items-center justify-between text-[9px] text-neutral-500 dark:text-neutral-400 border-t border-neutral-200 dark:border-neutral-700 pt-2">
-                            <span>{task.releaseDate || "Issue Board"}</span>
-                            <span className="font-semibold text-neutral-700 dark:text-neutral-200">{task.progress}</span>
+                          <div className="pt-2 sm:pt-3 border-t border-gray-100 dark:border-neutral-800 flex items-center justify-between gap-2 sm:gap-3 text-xs">
+                            <div>
+                              <span className="text-[8px] sm:text-[9px] text-gray-400 dark:text-neutral-400 font-semibold uppercase block mb-0.5 sm:mb-1">Update Status</span>
+                              <select
+                                value={task.progress}
+                                onChange={(e) => handleUpdateTasks(tasks.map(t => t.id === task.id ? { ...t, progress: e.target.value as Task["progress"], lastUpdated: new Date().toISOString() } : t))}
+                                className="px-2 sm:px-2.5 py-1 border border-gray-200 dark:border-neutral-700 rounded-lg text-[11px] sm:text-xs outline-none cursor-pointer bg-white dark:bg-neutral-800 text-gray-700 dark:text-neutral-200 focus:ring-2 focus:ring-brand-maroon"
+                              >
+                                <option value="Not Started">Not Started</option>
+                                <option value="Assigned">Assigned</option>
+                                <option value="In Progress">In Progress</option>
+                                <option value="For Review">For Review</option>
+                                <option value="Revision Needed">Revision Needed</option>
+                                <option value="Completed">Completed</option>
+                              </select>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTask(task)}
+                              className="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-neutral-50 dark:bg-neutral-800 hover:bg-brand-maroon dark:hover:bg-brand-maroon text-brand-maroon dark:text-brand-maroon-light hover:text-white dark:hover:text-white border border-brand-maroon/20 dark:border-neutral-700 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                            >
+                              Workspace <ArrowRight className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                            </button>
+                            {userRole === "Layout Editor" && (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm(`Cancel issue task '${task.title}'?`)) cancelIssueTask(task);
+                                  }}
+                                  className="p-1.5 text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40 rounded-lg cursor-pointer"
+                                  aria-label={`Cancel issue task ${task.title}`}
+                                  title="Cancel task"
+                                >
+                                  <Ban className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm(`Remove issue task '${task.title}'? Its layout assignment will be cleared.`)) removeIssueTask(task);
+                                  }}
+                                  className="p-1.5 text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/40 rounded-lg cursor-pointer"
+                                  aria-label={`Remove issue task ${task.title}`}
+                                  title="Remove task"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        </button>
-                      ))}
+                        </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1271,6 +2007,7 @@ export default function App() {
             {activeTab === "calendar" && (
               <CalendarView
                 events={events}
+                tasks={tasks}
                 speechEnabled={speechEnabled}
                 currentUserRole={userRole}
                 onUpdateEvents={handleUpdateEvents}
@@ -1283,6 +2020,7 @@ export default function App() {
                 members={members}
                 speechEnabled={speechEnabled}
                 currentUserEmail={userEmail}
+                currentUserRole={userRole}
                 onUpdatePolls={handleUpdatePolls}
               />
             )}
@@ -1295,6 +2033,7 @@ export default function App() {
                 currentUserEmail={userEmail}
                 currentUserName={userName}
                 tasks={tasks}
+                memberLogins={memberLogins}
                 onUpdateMembers={handleUpdateMembers}
               />
             )}
@@ -1365,7 +2104,7 @@ export default function App() {
                 <option value="Cult">Cult</option>
                 <option value="Opinion">Opinion</option>
                 <option value="Editorial">Editorial</option>
-                <option value="Signos">Signos</option>
+                <option value="MM">MM</option>
                 <option value="Graphics">Graphics</option>
               </select>
             </div>
@@ -1404,11 +2143,21 @@ export default function App() {
                 <option value="Completed">Completed</option>
               </select>
             </div>
+            <div>
+              <label className="block text-neutral-600 dark:text-neutral-300 font-semibold mb-1">ArtX Document Link</label>
+              <input
+                type="url"
+                value={issueRowDraft.draftLink || ""}
+                onChange={(e) => setIssueRowDraft({ ...issueRowDraft, draftLink: e.target.value })}
+                placeholder="https://docs.google.com/document/..."
+                className="w-full px-3 py-2 border border-neutral-200 dark:border-neutral-700 rounded-xl bg-neutral-50 dark:bg-neutral-800 outline-none font-mono"
+              />
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 mt-5">
             <button type="button" onClick={() => { setEditingIssueRowId(null); setIssueRowDraft(null); }} className="px-3 py-2 rounded-xl border border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-200 font-semibold cursor-pointer">Cancel</button>
-            <button type="button" onClick={saveIssueRowEditor} className="px-3 py-2 rounded-xl bg-[#bc1700] text-white font-bold cursor-pointer">Save Row</button>
+            <button type="button" onClick={saveIssueRowEditor} className="px-3 py-2 rounded-xl bg-brand-maroon text-white font-bold cursor-pointer">Save Row</button>
           </div>
         </div>
       </div>
@@ -1421,7 +2170,7 @@ export default function App() {
           
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-neutral-800 pb-2.5">
             <div className="flex items-center gap-2">
-              <div className="p-1.5 bg-brand-maroon/10 text-brand-maroon dark:text-red-400 rounded-lg">
+              <div className="p-1.5 bg-brand-maroon/10 text-brand-maroon dark:text-brand-maroon-light rounded-lg">
                 <Plus className="w-4 h-4" />
               </div>
               <div>
@@ -1429,7 +2178,7 @@ export default function App() {
                   {taskFormOrigin === "online-pubmat" ? "Assign Online Pubmat Task" : "Assign Design Task"}
                 </h3>
                 {taskFormOrigin === "online-pubmat" && (
-                  <span className="text-[10px] text-brand-maroon dark:text-red-400 font-semibold">
+                  <span className="text-[10px] text-brand-maroon dark:text-brand-maroon-light font-semibold">
                     Online Pubmat Workflow
                   </span>
                 )}
@@ -1485,17 +2234,11 @@ export default function App() {
                   onChange={(e) => setFormContentType(e.target.value)}
                   className="w-full px-2.5 py-2 border border-neutral-200 rounded-xl bg-neutral-50 outline-none cursor-pointer"
                 >
-                  <option value="News">News</option>
-                  <option value="Features">Features (feats artx)</option>
-                  <option value="Opinion">Opinion (op artx)</option>
-                  <option value="Cult">Cult / Culture (cult artx)</option>
-                  <option value="Editorial">Editorial</option>
-                  <option value="Front">Front</option>
-                  <option value="Signos">Signos</option>
-                  <option value="Graphics">Graphics / Illustration</option>
-                  <option value="News Feats">News Feats</option>
-                  <option value="OP Persona">OP Persona</option>
-                  <option value="Opinion w/ Lola P">Opinion w/ Lola P</option>
+                  {getPubmatCanvaTemplates().map((template) => (
+                    <option key={template.id} value={template.name}>
+                      {template.name}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1537,10 +2280,10 @@ export default function App() {
                   onChange={(e) => setFormPriority(e.target.value as any)}
                   className="w-full px-2.5 py-2 border border-neutral-200 rounded-xl bg-neutral-50 outline-none cursor-pointer"
                 >
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                  <option value="Urgent">Urgent</option>
+                  <option value="Low">Low (&gt;5 days)</option>
+                  <option value="Medium">Medium (3-5 days)</option>
+                  <option value="High">High (1-2 days)</option>
+                  <option value="Urgent">Urgent (Same-day)</option>
                 </select>
               </div>
 
@@ -1548,14 +2291,14 @@ export default function App() {
                 <label className="text-neutral-600 dark:text-neutral-300 font-semibold block mb-1 flex items-center justify-between">
                   <span>Release Target Date</span>
                   {formReleaseDate && (
-                    <span className="text-[10px] font-mono text-[#bc1700] dark:text-red-400 font-bold truncate max-w-[120px]">
+                    <span className="text-[10px] font-mono text-brand-maroon dark:text-brand-maroon-light font-bold truncate max-w-[120px]">
                       {formReleaseDate}
                     </span>
                   )}
                 </label>
                 <input
                   type="date"
-                  value={formReleaseDate ? new Date(formReleaseDate).toISOString().split("T")[0] : ""}
+                  value={toISOFormatDate(formReleaseDate)}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (val) {
@@ -1577,7 +2320,7 @@ export default function App() {
             <div className="bg-brand-cream/35 dark:bg-neutral-800/60 p-3 rounded-2xl border border-brand-maroon/20 dark:border-brand-maroon/30 space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-gray-900 dark:text-neutral-100 font-bold flex items-center gap-1.5 text-xs">
-                  <FileText className="w-4 h-4 text-brand-maroon dark:text-red-400" />
+                  <FileText className="w-4 h-4 text-brand-maroon dark:text-brand-maroon-light" />
                   <span>Document Link (ArtX / Writeup)</span>
                 </label>
               </div>
@@ -1596,18 +2339,7 @@ export default function App() {
             </div>
 
             <div>
-              <label className="text-neutral-600 font-semibold block mb-1">Canva Workspace Design Link (Optional)</label>
-              <input
-                type="text"
-                placeholder="e.g. https://www.canva.com/design/DAF..."
-                value={formCanvaLink}
-                onChange={(e) => setFormCanvaLink(e.target.value)}
-                className="w-full px-3 py-2 border border-neutral-200 rounded-xl focus:ring-1 focus:ring-red-600 outline-none font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="text-neutral-600 font-semibold block mb-1">Pubmat / Reference Link (Optional)</label>
+              <label className="text-neutral-600 font-semibold block mb-1">Graphics/Illustration Link (Optional)</label>
               <input
                 type="text"
                 placeholder="e.g. shared folder or reference link"
@@ -1620,7 +2352,7 @@ export default function App() {
 
           <button
             onClick={handleCreateAssignment}
-            className="w-full py-2.5 bg-red-700 hover:bg-red-600 text-white font-bold rounded-xl cursor-pointer transition-all shadow-md"
+            className="w-full py-2.5 bg-gradient-to-r from-brand-maroon to-brand-maroon-dark hover:opacity-95 text-white font-bold rounded-xl cursor-pointer transition-all shadow-[var(--brand-shadow-med)]"
           >
             Issue Layout Assignment Card
           </button>
@@ -1639,20 +2371,32 @@ export default function App() {
         currentUserName={userName}
         currentUserRole={userRole}
         onClose={() => setSelectedTask(null)}
+        onDeleteTask={(taskToDelete) => {
+          if (taskToDelete.typeOfRelease === "Issue Article") {
+            removeIssueTask(taskToDelete);
+          } else {
+            commitTasks((prev) => prev.filter((t) => t.id !== taskToDelete.id));
+          }
+          setSelectedTask(null);
+        }}
+        onUpdateComment={handleUpdateComment}
+        onRemoveComment={handleRemoveComment}
         onUpdateTask={(updatedTask) => {
           setSelectedTask(updatedTask);
           let updatedList = tasks.map(t => t.id === updatedTask.id ? updatedTask : t);
 
-          // If updating an Issue Article or its online companion, keep both in sync
-          if (updatedTask.typeOfRelease === "Issue Article" || updatedTask.id.endsWith("-online") || updatedTask.title.includes("(Online Pubmat)")) {
-            const baseTitle = updatedTask.title.replace(/\s*\(Online Pubmat\)$/i, "").trim();
-            const isOnline = updatedTask.id.endsWith("-online") || updatedTask.typeOfRelease === "Online Article";
-            
+          // Keep an Issue Article and its Online Pubmat companion in sync. Companions
+          // are matched by base title + type (ids are now UUIDs, not derivable suffixes).
+          const stripPubmat = (t: string) => t.replace(/\s*\(Online Pubmat\)$/i, "").trim();
+          const updatedBase = stripPubmat(updatedTask.title);
+          const updatedIsOnline =
+            updatedTask.typeOfRelease === "Online Article" || updatedTask.title.includes("(Online Pubmat)");
+
+          if (updatedTask.typeOfRelease === "Issue Article" || updatedIsOnline) {
             const companionIndex = updatedList.findIndex(
-              t => (t.id !== updatedTask.id) && (
-                t.id === (isOnline ? updatedTask.id.replace(/-online$/, "") : `${updatedTask.id}-online`) ||
-                t.title.replace(/\s*\(Online Pubmat\)$/i, "").trim() === baseTitle
-              )
+              t => t.id !== updatedTask.id &&
+                t.typeOfRelease === (updatedIsOnline ? "Issue Article" : "Online Article") &&
+                stripPubmat(t.title) === updatedBase
             );
 
             if (companionIndex !== -1) {
@@ -1664,6 +2408,7 @@ export default function App() {
                 addedToLayout: updatedTask.addedToLayout || updatedList[companionIndex].addedToLayout,
                 pubmatLink: updatedTask.pubmatLink || updatedList[companionIndex].pubmatLink,
                 canvaLink: updatedTask.canvaLink || updatedList[companionIndex].canvaLink,
+                mediumCanvaLink: updatedTask.mediumCanvaLink ?? updatedList[companionIndex].mediumCanvaLink,
                 writeup: updatedTask.writeup || updatedList[companionIndex].writeup,
                 lastUpdated: new Date().toISOString()
               };
@@ -1671,8 +2416,8 @@ export default function App() {
               // Create online companion if missing
               const onlineTask: Task = {
                 ...updatedTask,
-                id: `${updatedTask.id}-online`,
-                title: `${baseTitle} (Online Pubmat)`,
+                id: crypto.randomUUID(),
+                title: `${updatedBase} (Online Pubmat)`,
                 typeOfRelease: "Online Article",
                 isPendingConfirmation: false
               };
